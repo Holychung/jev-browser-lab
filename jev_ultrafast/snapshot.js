@@ -10,16 +10,26 @@
   // Password fields are offered as targets. Login field values never leave the page unmasked.
   const secret = e => e.tagName==='INPUT' && e.type==='password';
   const login = e => e.tagName==='INPUT' && ['email','password'].includes(e.type);
-  const masked = e => login(e) ? (e.value ? '********' : '') : e.value;
+  // Prefilled contact details are personal data even in a plain text field.
+  const contact = e => e.tagName==='INPUT' && (e.type==='tel' || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.value||'') ||
+    /phone|mobile|e-?mail/i.test([e.name,e.id,e.autocomplete].join(' ')));
+  const masked = e => login(e) || contact(e) ? (e.value ? '********' : '') : e.value;
   const visible = e => !e.closest('[aria-hidden="true"],[inert]') &&
     e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
+  // A label whose `for` names no element ("password1" beside id="password") still sits next to its
+  // field. Use it when it is the only such label among the field's siblings.
+  const orphan = e => {
+    if (!e.labels || e.labels.length) return null;
+    const labels=[...(e.parentElement?.children||[])].filter(c=>c.tagName==='LABEL' && !c.control);
+    return labels.length===1 ? labels[0] : null;
+  };
   const name = (e,seen=new Set()) => {
     if (!e || seen.has(e)) return '';
     seen.add(e);
     const referenced=(e.getAttribute('aria-labelledby')||'').split(/\s+/)
       .map(id=>name(document.getElementById(id),seen)).filter(Boolean).join(' ');
     return referenced || e.getAttribute('aria-label') ||
-      [...(e.labels||[])].map(l=>name(l,seen)).filter(Boolean).join(' ') ||
+      [...(e.labels||[])].map(l=>name(l,seen)).filter(Boolean).join(' ') || name(orphan(e),seen) ||
       (['button','submit','reset'].includes(e.type) ? e.value : '') || e.getAttribute('alt') ||
       (e.tagName==='INPUT' ? '' : [...e.childNodes].map(n=>n.nodeType===3 ? n.textContent :
         n.nodeType===1 && n.getAttribute('aria-hidden')!=='true' ? name(n,seen) : '').join(' ').trim()) ||
@@ -81,18 +91,32 @@
       e.getAttribute('href'),scope?.innerText?.slice(0,6000)||''];
   };
   // Leaf click-listener targets (e.g. event cards) that contain no real control of their own.
-  const clickable=new Set([...(window.__jevClickable||[])].filter(e=>e.isConnected &&
+  // Inline onclick attributes never pass through addEventListener, so they are read from the DOM.
+  const clickable=new Set([...(window.__jevClickable||[]), ...document.querySelectorAll('[onclick]')].filter(e=>e.isConnected &&
     e!==document.body && e!==document.documentElement && !e.matches(selector) &&
     !e.closest(selector) && !e.querySelector(selector)));
-  const actions=[];
+  // A card's leading text lines, excluding its controls' own text. The card is the largest ancestor
+  // of `e` that holds none of `others`.
+  const card = (e,others) => {
+    let a=e;
+    while (a.parentElement && a.parentElement!==document.body && !others.some(o=>o!==e && a.parentElement.contains(o)))
+      a=a.parentElement;
+    let text=a===e ? '' : a.innerText||'';
+    for (const c of a.querySelectorAll('label,button,input,select,textarea,a'))
+      if (c.innerText) text=text.replace(c.innerText,'');
+    return text.split('\n').map(s=>s.trim()).filter(Boolean);
+  };
+  const actions=[], named=new Map(), names=new Map();
   for (const e of [...document.querySelectorAll(selector), ...clickable]) {
     if ((!safe(e) && !secret(e)) || !visible(e) || e.matches(':disabled') || e.closest('[aria-disabled="true"]')) continue;
     const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2;
     const rname=role(e) || (clickable.has(e) ? 'button' : null);
-    if (!rname || r.width<=0 || r.height<=0 || x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;
-    if (rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
-    const base={node:identity(e),role:rname,label:name(e)||hint(e)||rname,
-      rect:{x:r.x,y:r.y,w:r.width,h:r.height}};
+    if (!rname || (rname==='gridcell' && e.querySelector('button,[role="button"]'))) continue;
+    // Offscreen copies count too: a lone "Enter" in view is still one of many on the page.
+    const label=name(e)||hint(e)||rname;
+    if (r.width>0 && r.height>0) { named.set(label,[...(named.get(label)||[]),e]); names.set(e,label); }
+    if (r.width<=0 || r.height<=0 || x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;
+    const base={node:identity(e),role:rname,label,rect:{x:r.x,y:r.y,w:r.width,h:r.height}};
     if (['checkbox','radio','spinbutton'].includes(rname) || base.label===rname) {
       const where=context(e);
       if (where && !base.label.includes(where)) base.label=where+' · '+base.label;
@@ -116,6 +140,23 @@
       actions.push({...base,kind:editable?'fill':'click',value});
       if (editable) actions.push({...base,kind:'click',value,label:'Open '+base.label});
     }
+  }
+  // A name repeated across cards ("Enter", "Drawing Details") says nothing about which card it acts
+  // on. Prefix each copy with its card's first line, adding lines until the copies differ (one show
+  // listed at two times), at most three.
+  const prefixes=new Map();
+  for (const a of actions) {
+    const copies=named.get(names.get(cache.nodes.get(a.node)))||[];
+    if (copies.length<2 || copies.length>250 || prefixes.has(a.node)) continue;
+    const lines=copies.map(c=>card(c,copies));
+    let depth=1;
+    const prefix=i=>lines[i].slice(0,depth).join(', ').slice(0,120);
+    while (depth<3 && new Set(copies.map((_,i)=>prefix(i))).size<copies.length) depth++;
+    copies.forEach((c,i)=>prefixes.set(identity(c),prefix(i)));
+  }
+  for (const a of actions) {
+    const p=prefixes.get(a.node);
+    if (p && !a.label.includes(p)) a.label=p+' · '+a.label;
   }
   const words=[], below=[], walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
   let belowLength=0;

@@ -127,6 +127,32 @@ def main():
         browser.call("Page.navigate", url="about:blank")
         assert not browser.fresh(page, field)
         passed.append("navigation invalidates the old document")
+
+        browser.evaluate("document.body.innerHTML=" + repr("""
+          <form><label for="password1">Password</label><input id="password" type="password">
+          <div onclick="window.logins=(window.logins||0)+1">Login</div></form>
+          <label>Notify <input id="mail" value="someone@example.com"></label>
+          <label>Text me <input name="phone_number" value="5550100"></label>
+          <div><div><p>Show A</p><p>Mon 7PM</p><a onclick="window.entered='A1'">Enter</a></div>
+            <div><p>Show A</p><p>Tue 7PM</p><a onclick="window.entered='A2'">Enter</a></div>
+            <div><p>Show B</p><p>Mon 7PM</p><a onclick="window.entered='B'">Enter</a></div></div>
+        """))
+        page = browser.observe(screenshot=False)
+        actions = page["actions"]
+        assert any(a["label"] == "Password" and a.get("input_type") == "password" for a in actions)
+        passed.append("a label whose for= names no element still names its sibling field")
+        assert {a["value"] for a in actions if a["label"] in ("Notify", "Text me")} == {"********"}
+        passed.append("prefilled e-mail and phone values are masked in plain text fields")
+        login = next(a for a in actions if a["label"] == "Login")
+        browser.act(login, page)
+        assert browser.evaluate("window.logins") == 1
+        passed.append("an inline onclick element is offered and clicked")
+        page = browser.observe(screenshot=False)
+        enters = [a["label"] for a in page["actions"] if a["label"].endswith("Enter")]
+        assert enters == ["Show A, Mon 7PM · Enter", "Show A, Tue 7PM · Enter", "Show B, Mon 7PM · Enter"], enters
+        browser.act(next(a for a in page["actions"] if a["label"] == enters[1]), page)
+        assert browser.evaluate("window.entered") == "A2"
+        passed.append("repeated labels carry their own card's text until the copies differ")
     finally:
         browser.close()
     print("\n".join(passed))

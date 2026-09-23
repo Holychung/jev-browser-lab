@@ -10,11 +10,22 @@
 
 Give it one goal. [TypeSafe's Jev](https://docs.typesafe.ai/introduction) picks an operation and an element. A small LLM writes text only when the operation is `TYPE_TEXT`.
 
-**Zürich → London on Google Flights in 7.1 seconds.** One natural-language goal, actual text generation, and loading waits included.
+**Signed out → LinkedIn → three Broadway lottery entries in 17.5 seconds.** One run on the real Telecharge Lottery + Rush site, nothing typed, and every entry checked again on a fresh page load.
 
-<a href="docs/demo.mp4"><img src="docs/demo.gif" alt="A real Google Flights search at 1× speed, with generated city names and dynamic operation/target decisions" width="100%" /></a>
+<a href="docs/telecharge-demo.mp4"><img src="docs/telecharge-demo.gif" alt="A real Telecharge run at 1× speed: sign in with LinkedIn, open Lottery, and enter three shows, with Jev's decisions beside the page" width="100%" /></a>
 
-[Watch the MP4](docs/demo.mp4) · [Measurements](docs/performance.md) · [Read the loop](jev_ultrafast/agent.py)
+| Time | What happens |
+| --- | --- |
+| 1.8 s | Jev clicks **Sign In** on the signed-out page |
+| 3.1 s | Clicks **Connect with LinkedIn** in the login dialog |
+| 4.5–12.5 s | The LinkedIn window signs in with the saved session (a separate window, captioned in the video) |
+| 14.4 s | The page shows the signed-in state |
+| 15.2 s | Clicks **Lottery** |
+| 16.0 s · 16.8 s · 17.5 s | Clicks **Enter** on Maybe Happy Ending, Oh, Mary! and Operation Mincemeat; each card confirms its entry within 15 ms |
+
+6 actions, 6 Jev calls, no refused choices, $0.00175.
+
+[Watch the MP4](docs/telecharge-demo.mp4) · [Run trace](docs/telecharge-measurement.json) · [Flights demo](docs/demo.mp4) · [Measurements](docs/performance.md) · [Read the loop](jev_ultrafast/agent.py)
 
 ## The action space
 
@@ -91,6 +102,8 @@ uv run --env-file .env python examples/run.py \
 
 `uv run --env-file .env python examples/flights.py --keep-open` performs the flight search, checks the actual route/date/results, and saves its trace. It does not select or book a flight.
 
+`uv run --env-file .env python examples/telecharge.py --show 'The Great Gatsby' --when 8:00PM` enters Telecharge Lottery + Rush drawings; repeat `--show` to enter several in one run. It starts on the framed SocialToaster page, signs in only through a LinkedIn session already saved in the automation Chrome profile, and types nothing. A 4800 px viewport puts the whole list in one observation. Each Enter click waits for an approve file unless `--auto-approve` is given; code still refuses an Enter on any other card, never clicks one twice, and reads the result again from a fresh page load.
+
 ## Why it moves
 
 - **One request per decision cycle.** Operation and target heads share the same observed state.
@@ -117,7 +130,9 @@ Every executed target is resolved from an observed node. The executor rechecks p
 
 ## Evidence and limits
 
-The current video is a **7,073 ms** Google Flights run. Timing starts after initial page observation and includes model calls, generated text, browser work, stale decisions, and loading waits. A fresh independent check verifies the one-way setting, Zürich, London, September 20, 2026, and visible flight options. The video plays at 1×, with no opening hold and a 0.5-second final hold.
+The Telecharge video covers **17,459 ms**, from the first recorded frame to the third confirmed entry, at 1×. It started with no Telecharge session; the automation Chrome profile already held LinkedIn and Google sessions. The LinkedIn window accounts for 7.9 s and cannot appear in the screencast of the page's own tab. Each entry was confirmed on its card, and a fresh page load then reported all three entered. For the last 0.6 s Chrome sent frames of the page top instead of the full 4800 px view, so the final Enter click is not visible. This is one run, not a reliability benchmark; its trace is [telecharge-measurement.json](docs/telecharge-measurement.json).
+
+**Zürich → London on Google Flights in 7.1 seconds.** The [Flights video](docs/demo.mp4) is a **7,073 ms** run. Timing starts after initial page observation and includes model calls, generated text, browser work, stale decisions, and loading waits. A fresh independent check verifies the one-way setting, Zürich, London, September 20, 2026, and visible flight options. The video plays at 1×, with no opening hold and a 0.5-second final hold.
 
 In six alternating runs with identical models and settings, both versions passed **3/3**. Median task time went from **9.450 s → 7.092 s**, a **25% reduction**; median browser protocol calls went from **1,092 → 101**. This is three repeats of one task on one browser profile, not a general reliability benchmark.
 
@@ -135,7 +150,7 @@ node --check jev_ultrafast/snapshot.js
 uv build
 ```
 
-Tests are offline. `uv run python scripts/check_guards.py` checks real controls in a local browser without model calls. Live examples and recording scripts make paid API calls. `scripts/record_flights.py <new-folder>` captures original browser timestamps; `scripts/render_demo.py <recording-folder>` renders that verified run at 1× and crops out the Google account strip. Credentials and raw traces stay ignored.
+Tests are offline. `uv run python scripts/check_guards.py` checks real controls in a local browser without model calls. Live examples and recording scripts make paid API calls. `scripts/record_flights.py <new-folder>` captures original browser timestamps; `scripts/render_demo.py <recording-folder>` renders that verified run at 1× and crops out the Google account strip. `examples/telecharge.py --record` and `scripts/render_telecharge.py <recording-folder>` do the same for a lottery entry: the camera pans over the tall view, and the account name, e-mail and phone are blurred at capture. Credentials and raw traces stay ignored.
 
 ---
 
