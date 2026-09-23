@@ -3,7 +3,7 @@
 uv run python scripts/render_luckyseat.py artifacts/luckyseat/<recorded-run>
 
 Human-approval pauses are cut; everything else, including loading waits, keeps its original timing.
-Writes demo.mp4, demo.gif and poster.png into the recording folder.
+Writes demo.mp4, demo.gif and poster.png into the recording folder, then deletes the raw frames.
 """
 
 import argparse
@@ -19,6 +19,9 @@ from PIL import Image, ImageDraw, ImageFont
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("source", type=Path, help="Folder written by examples/luckyseat.py --record")
 parser.add_argument("--hold", type=int, default=2500, help="Milliseconds to hold the final frame")
+parser.add_argument(
+    "--keep-frames", action="store_true", help="Keep raw screencast frames (only listed fields are blurred)"
+)
 args = parser.parse_args()
 source = args.source.resolve()
 state = json.loads((source / "state.json").read_text())
@@ -186,5 +189,8 @@ subprocess.run(
     check=True,
 )
 shutil.rmtree(out)
+if not args.keep_frames:
+    # Raw frames show the whole page; only the rendered video is needed afterwards.
+    shutil.rmtree(source / "screencast")
 print(f"Rendered {len(frame_files)} screencast frames: {video_end} ms of run (cut {cut} ms of approval pauses)")
 print("Wrote", source / "demo.mp4", source / "demo.gif", source / "poster.png")

@@ -1,4 +1,8 @@
-"""Continuous CDP screencast of an owned tab, with a wall-clock event timeline for rendering."""
+"""Continuous CDP screencast of an owned tab, with a wall-clock event timeline for rendering.
+
+Frames capture the whole page; only the blur selectors are redacted. Treat the screencast folder as
+sensitive and delete it once the video is rendered (render_luckyseat.py does this by default).
+"""
 
 import base64
 import json
