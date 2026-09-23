@@ -98,8 +98,7 @@ def wait_for_verdict(folder, action, agent):
         "url": page["url"],
         "confidence": decision["confidence"],
         "target_confidence": decision["target_confidence"],
-        "page_text": page["text"][:3000],
-        # Whole-form state, including controls scrolled out of view.
+        # Whole-form state, including controls scrolled out of view. No page text: see main().
         "form": agent.browser.evaluate("""(() => {
           const boxes=[...document.querySelectorAll('input[type=checkbox]')];
           return {checked: boxes.filter(b=>b.checked).length, total: boxes.length,
@@ -124,6 +123,9 @@ def main():
     parser.add_argument("--output", default="artifacts/luckyseat/latest")
     parser.add_argument("--record", action="store_true", help="Record a redacted screencast for render_luckyseat.py")
     parser.add_argument("--show", default="Hadestown", help="Event title exactly as listed on Lucky Seat")
+    parser.add_argument(
+        "--debug-trace", action="store_true", help="Also save each decision's element table (visible labels)"
+    )
     args = parser.parse_args()
     global STAGES, STAGE_NAMES
     STAGES = stages(args.show)
@@ -244,9 +246,14 @@ def main():
                 advance("page check passed")
     finally:
         snapshot = agent.snapshot()
+        # Traces stay on disk: keep no page text (it can show the account holder's details).
+        # Element tables carry visible labels, so they are kept only with --debug-trace.
         for d in snapshot["decisions"]:
-            # Keep the element table each decision saw (for diagnosis); drop the bulky page text.
-            d["elements"] = d.pop("request", {}).get("state", {}).get("elements", [])
+            request = d.pop("request", {})
+            if args.debug_trace:
+                d["elements"] = request.get("state", {}).get("elements", [])
+        if not args.debug_trace:
+            snapshot.pop("elements", None)
         cost = sum(d["usage"].get("cost", 0) for d in snapshot["decisions"])
         cost += sum(t["usage"].get("cost", 0) for t in snapshot["text_calls"])
         summary = {
@@ -259,14 +266,12 @@ def main():
             "cost_usd": round(cost, 6),
             "elapsed_ms_excluding_pauses": round((time.perf_counter() - started) * 1000),
         }
-        snapshot["page"].pop("screenshot", None)
+        snapshot["page"] = {k: state["page"].get(k) for k in ("url", "title")}
         if recorder:
             snapshot["recording"] = recorder.stop()
             print("recording:", {k: v for k, v in snapshot["recording"].items() if k != "events"})
         (folder / "state.json").write_text(json.dumps({**snapshot, "summary": summary}, indent=2, default=str))
         print(json.dumps(summary, indent=2))
-        if not PRIVATE.search(state["page"]["url"]):
-            print("final page text:\n" + state["page"]["text"][:1500])
 
 
 if __name__ == "__main__":
