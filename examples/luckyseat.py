@@ -251,6 +251,7 @@ def main():
         cost += sum(t["usage"].get("cost", 0) for t in snapshot["text_calls"])
         summary = {
             "status": state["status"],
+            "show": args.show,
             "stages_completed": f"{stage}/{len(STAGES)}",
             "final_url": state["page"]["url"],
             "actions": len(state["history"]),

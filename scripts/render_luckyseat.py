@@ -43,7 +43,9 @@ form_line = (
     f"{form['checked']}/{form['total']} performances · {', '.join(form['numbers'])} ticket(s)" if form else ""
 )
 
-stage_names = ["Log in", "New York → Hadestown", "Select all performances", "1 ticket", "Submit entry"]
+# Recordings made before the show was saved in the summary were all Hadestown.
+show = state["summary"].get("show", "Hadestown")
+stage_names = ["Log in", f"New York → {show}", "Select all performances", "1 ticket", "Submit entry"]
 
 
 def wall(vt):
@@ -85,7 +87,7 @@ def draw_frame(vt):
     d.text((36, 80), f"Lucky Seat lottery form, filled in {video_end / 1000:.1f} s", font=font(40, True), fill=ink)
     d.text(
         (38, 136),
-        "Log in → New York → Hadestown → all performances → 1 ticket. Stops for human approval.",
+        f"Log in → New York → {show} → all performances → 1 ticket. Stops for human approval.",
         font=font(19),
         fill=muted,
     )
