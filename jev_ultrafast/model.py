@@ -3,6 +3,7 @@
 import json
 import math
 import os
+import sys
 import time
 
 import httpx
@@ -41,6 +42,7 @@ def validate_choice(answer, ids):
     except (KeyError, TypeError, ValueError):
         valid = False
     if not valid:
+        print("Invalid TypeSafe answer:", json.dumps(answer)[:2000], "expected ids:", list(ids)[:60], file=sys.stderr)
         raise ValueError("Invalid TypeSafe response; no action executed.")
     return answer
 
@@ -58,7 +60,8 @@ def action_space(actions):
         if node not in indices:
             index = str(len(elements) + 1)
             indices[node] = index
-            element = {k: action[k] for k in ("role", "value", "checked", "selected", "expanded") if k in action}
+            keys = ("role", "input_type", "value", "checked", "selected", "expanded")
+            element = {k: action[k] for k in keys if k in action}
             element.update(index=index, label=action["label"].split(" → ")[0], operations=[])
             if kind == "select":
                 element["value"] = action.get("current_value", "")
@@ -98,7 +101,7 @@ def choose(state, goal, history):
                 index: {
                     "element": f"[{index}] {a['label']}",
                     "current_value": a.get("current_value", a.get("value", "")),
-                    **{k: a[k] for k in ("role", "checked", "selected", "expanded") if k in a},
+                    **{k: a[k] for k in ("role", "input_type", "checked", "selected", "expanded") if k in a},
                 }
                 for index, a in candidates.items()
             },
@@ -107,7 +110,10 @@ def choose(state, goal, history):
     body = {
         "model": os.environ.get("TYPESAFE_MODEL", "jev-latest"),
         "state": {
-            "page": {k: state[k] for k in ("url", "title", "text")},
+            "page": {
+                **{k: state[k] for k in ("url", "title", "text")},
+                "text_below_viewport": state.get("text_below", ""),
+            },
             "elements": elements,
             "recent_actions": [
                 {k: h.get(k) for k in ("action", "kind", "text", "page_changed")} for h in history[-10:]
@@ -116,7 +122,8 @@ def choose(state, goal, history):
         "questions": questions,
     }
     started = time.perf_counter()
-    result = post_json("https://api.typesafe.ai/v1/systemone", os.environ["TYPESAFE_API_KEY"], body)
+    base = os.environ.get("TYPESAFE_BASE_URL", "https://api.typesafe.ai").rstrip("/")
+    result = post_json(base + "/v1/systemone", os.environ["TYPESAFE_API_KEY"], body)
     operation_answer = validate_choice(result["answers"].get("operation", {}), operations)
     operation = operation_answer["choice"]
     target = None

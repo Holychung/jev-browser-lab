@@ -1,12 +1,25 @@
 """The complete agent loop. Typed choices, observable state, bounded execution."""
 
 import base64
+import os
 import time
 from pathlib import Path
 
 from .browser import Browser, StalePage
 from .model import action_space, choose, field_context, field_text
 from .questions import MAX_STEPS
+
+# Login fields are filled by code from the environment. Credentials never reach either model.
+CREDENTIALS = {"email": "LOGIN_EMAIL", "password": "LOGIN_PASSWORD"}
+MASKED = "[filled from .env]"
+
+
+def credential(action):
+    name = CREDENTIALS.get(action.get("input_type"))
+    value = os.environ.get(name) if name else None
+    if action.get("input_type") == "password" and not value:
+        raise ValueError("Password field needs LOGIN_PASSWORD; passwords are never sent to the text model.")
+    return value or None
 
 
 class Agent:
@@ -103,7 +116,10 @@ class Agent:
                 state["status"] = "blocked"
                 raise ValueError(f"Stopped at the {MAX_STEPS}-action demo budget")
             text, helper = None, None
-            if action["kind"] == "fill":
+            secret = credential(action) if action["kind"] == "fill" else None
+            if secret is not None:
+                text = secret
+            elif action["kind"] == "fill":
                 if not state["browser"].fresh(page):
                     raise StalePage("Page changed before text generation. Choose again.")
                 context = field_context(state["goal"], action, page, state["history"])
@@ -127,7 +143,7 @@ class Agent:
                     "probability": decision["probabilities"][selected],
                     "confidence": decision["confidence"],
                     "latency_ms": decision["latency_ms"],
-                    "text": text,
+                    "text": MASKED if secret is not None else text,
                     "text_helper": helper["model"] if helper else None,
                     "text_latency_ms": helper["latency_ms"] if helper else 0,
                     "operation": decision["operation"],
