@@ -1,6 +1,6 @@
-"""Live Telecharge Lottery + Rush run: sign in with LinkedIn, open Lottery, enter one show (--show).
+"""Live Telecharge Lottery + Rush run: sign in with LinkedIn, open Lottery, enter each --show.
 
-uv run --env-file .env python examples/telecharge.py --show "The Great Gatsby" [--when "8:00PM"]
+uv run --env-file .env python examples/telecharge.py --show "The Great Gatsby" [--show ...] [--when "8:00PM"]
 
 rush.telecharge.com only frames my.socialtoaster.com, and frames are outside the DOM reader, so the
 run starts on the framed page itself. Sign-in is LinkedIn only: the automation Chrome profile must
@@ -34,13 +34,15 @@ LOTTERY = "https://my.socialtoaster.com/st/lottery_select/?key=BROADWAY&source=i
 # Blurred in recordings: the account name in the header and the prefilled contact fields.
 BLUR = ["#st_user_info_picture_text", "input#email", "input#phone_number"]
 SIGNED_IN = "!!document.querySelector('a[href*=\"/st/campaign_logout/\"]')"
-# The show's lottery cards, optionally narrowed to one performance time.
-CARDS = """((show, when) => [...document.querySelectorAll('.lottery_show')].filter(c =>
-  c.querySelector('.lottery_show_title')?.innerText.trim() === show && c.innerText.includes(when)))"""
+# The requested shows' open lottery cards, optionally narrowed to one performance time. The RESULTS
+# tab holds past drawings' cards in another block.
+CARDS = """((shows, when) => [...document.querySelectorAll('#lottery_block_events .lottery_show')].filter(c =>
+  shows.includes(c.querySelector('.lottery_show_title')?.innerText.trim()) && c.innerText.includes(when)))"""
 ENTERED = "(c => !!c.querySelector('.entered')?.checkVisibility())"
 TICKETS = "(c => c.querySelector('.lottery_show_tickets_input')?.value)"
 PERFORMANCES = (
-    "(c => c.map(x => ({date: x.querySelector('.lottery_show_date')?.innerText.trim(), "
+    "(c => c.map(x => ({show: x.querySelector('.lottery_show_title')?.innerText.trim(), "
+    "date: x.querySelector('.lottery_show_date')?.innerText.trim(), "
     f"tickets: {TICKETS}(x), entered: {ENTERED}(x)}})))"
 )
 # Account pages show personal details; stop before their text can be sent to a model.
@@ -48,17 +50,18 @@ PRIVATE = re.compile(r"/st/iframe_account_prefs/")
 # Signing out ends the session; the contact form rewrites account details.
 REFUSED = re.compile(r"\b(log ?out|my account|contact information)\b", re.IGNORECASE)
 SUBMIT = re.compile(r"\b(enter|submit|confirm|register|sign up|buy|pay)\b", re.IGNORECASE)
+LINKEDIN = re.compile(r"linkedin", re.IGNORECASE)
 LOGIN_POPUP = re.compile(r"linkedin\.com|accounts\.google\.com|/st/popup_login_pub/")
 MANUAL_LOGIN = re.compile(r"linkedin\.com/(login|checkpoint|uas)|accounts\.google\.com")
 
 
-def stages(show, when, tickets):
-    cards = f"{CARDS}({json.dumps(show)}, {json.dumps(when)})"
-    which = f"{show} lottery card" + (f" at {when}" if when else "")
+def stages(shows, when, tickets):
+    cards = f"{CARDS}({json.dumps(shows)}, {json.dumps(when)})"
+    which = "lottery card of " + "; ".join(shows) + (f" (only at {when})" if when else "")
     unit = "ticket" if tickets == 1 else "tickets"
     find = (
-        f"The list is long and runs in date and time order, so other performances of {show} can come "
-        f"first: keep choosing SCROLL_DOWN until each {which} is on screen. BLOCKED only at the bottom."
+        "The list is long and runs in date and time order, so other performances can come first: keep "
+        f"choosing SCROLL_DOWN until each {which} is on screen. BLOCKED only at the bottom."
     )
     return [
         (
@@ -76,8 +79,8 @@ def stages(show, when, tickets):
             f"(c => c.length > 0 && c.filter(x => !{ENTERED}(x)).every(x => {TICKETS}(x) === '{tickets}'))({cards})",
         ),
         (
-            f"Click Enter on each {which}. Never enter any other show or performance. DONE once each {which} "
-            "shows Lottery Entered! " + find,
+            f"Click Enter on each {which}, one card at a time. Never enter any other show or performance. "
+            f"DONE once each {which} shows Lottery Entered! " + find,
             f"(c => c.length > 0 && c.every({ENTERED}))({cards})",
         ),
     ]
@@ -110,7 +113,7 @@ def card_of(agent, action):
     }})(window.__jevFast?.nodes.get({int(action["node"])}))""")
 
 
-def refusal(agent, action, show, when, tickets, submitted):
+def refusal(agent, action, shows, when, tickets, submitted):
     """Why a chosen action must not run, or None. Checked by code before anything executes."""
     if action["kind"] == "fill":
         return "Nothing is typed on this site. Sign in only through Connect with LinkedIn."
@@ -122,38 +125,50 @@ def refusal(agent, action, show, when, tickets, submitted):
         if action["node"] in submitted:
             return "That Enter was already clicked once and is never clicked again. Choose WAIT or DONE."
         card = card_of(agent, action)
-        if not card or card["show"] != show or when not in (card["date"] or ""):
-            return f"That Enter belongs to {card['show'] if card else 'no lottery card'}, not {show}."
+        if not card or card["show"] not in shows or when not in (card["date"] or ""):
+            wanted = "; ".join(shows)
+            return f"That Enter belongs to {card['show'] if card else 'no lottery card'}, not {wanted}."
         if card["tickets"] != str(tickets):
-            return f"That {show} card shows {card['tickets']} tickets, not {tickets}. Adjust it first."
+            return f"That {card['show']} card shows {card['tickets']} tickets, not {tickets}. Adjust it first."
     return None
 
 
-def wait_for_popup(opened_before, limit=30):
-    """After a sign-in click, let the LinkedIn window finish. Returns a login URL if it needs a human."""
-    deadline = time.monotonic() + limit
-    popups = []
-    while time.monotonic() < deadline:
-        targets = cdp("Target.getTargets")["targetInfos"]
-        popups = [
+def wait_for_popup(opened_before, mark, appear=5, limit=30):
+    """After Connect with LinkedIn, let its window finish. Returns a login URL if it needs a human.
+
+    The window opens only after an AJAX nonce check, so first wait for it to appear.
+    """
+
+    def popups():
+        return [
             t
-            for t in targets
+            for t in cdp("Target.getTargets")["targetInfos"]
             if t["type"] == "page" and t["targetId"] not in opened_before and LOGIN_POPUP.search(t["url"])
         ]
-        if not popups:
+
+    deadline = time.monotonic() + appear
+    while time.monotonic() < deadline and not popups():
+        time.sleep(0.2)
+    if not popups():
+        return None
+    mark("popup", phase="open")
+    deadline = time.monotonic() + limit
+    while time.monotonic() < deadline:
+        if not (open_now := popups()):
+            mark("popup", phase="closed")
             return None
-        time.sleep(0.5)
-    return next((t["url"] for t in popups if MANUAL_LOGIN.search(t["url"])), popups[0]["url"] if popups else None)
+        time.sleep(0.25)
+    return next((t["url"] for t in open_now if MANUAL_LOGIN.search(t["url"])), open_now[0]["url"])
 
 
-def verify(show, when, height):
+def verify(shows, when, height):
     """Load the Lottery page in a fresh tab, so the server, not the run's own tab, says what was entered."""
     browser = Browser(LOTTERY, (1120, height))
     try:
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline and not browser.evaluate("!!document.querySelector('.lottery_show')"):
             time.sleep(0.25)
-        return browser.evaluate(f"{PERFORMANCES}({CARDS}({json.dumps(show)}, {json.dumps(when)}))")
+        return browser.evaluate(f"{PERFORMANCES}({CARDS}({json.dumps(shows)}, {json.dumps(when)}))")
     finally:
         browser.close()
 
@@ -183,7 +198,9 @@ def wait_for_verdict(folder, action, agent):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--show", required=True, help="Show title exactly as listed on the Lottery page")
+    parser.add_argument(
+        "--show", action="append", required=True, help="Show title exactly as listed on the Lottery page; repeatable"
+    )
     parser.add_argument("--when", default="", help="Only the performances whose date text includes this")
     parser.add_argument("--tickets", type=int, choices=(1, 2), default=2)
     parser.add_argument(
@@ -238,12 +255,16 @@ def main():
             # A stage the page already satisfies (signed in, 2 tickets by default) costs no model call.
             if state["status"] == "ready" and passed():
                 advance("page check passed")
-                if stage == 2 and not agent.browser.evaluate(f"{cards}.length"):
+                listed = stage == 2 and agent.browser.evaluate(
+                    f"{cards}.map(c => c.querySelector('.lottery_show_title').innerText.trim())"
+                )
+                missing = [s for s in args.show if s not in listed] if stage == 2 else []
+                if missing:
                     titles = agent.browser.evaluate(
                         "[...new Set([...document.querySelectorAll('.lottery_show_title')].map(t=>t.innerText.trim()))]"
                     )
                     print(
-                        f"STOPPED: no {args.show!r} lottery{' at ' + args.when if args.when else ''}. Listed: {titles}",
+                        f"STOPPED: no lottery for {missing}{' at ' + args.when if args.when else ''}. Listed: {titles}",
                         flush=True,
                     )
                     state["status"] = "show_not_listed"
@@ -319,8 +340,8 @@ def main():
                         state["status"] = "entry_not_confirmed"
                         break
                     state["page"] = state["browser"].observe(screenshot=False)
-                if stage == 0 and action and action["kind"] == "click":
-                    stuck = wait_for_popup(opened)
+                if stage == 0 and action and action["kind"] == "click" and LINKEDIN.search(control(action)):
+                    stuck = wait_for_popup(opened, mark)
                     if stuck:
                         state["status"] = "needs_manual_login"
                         print(
@@ -329,6 +350,17 @@ def main():
                             flush=True,
                         )
                         break
+                    # The closing window refreshes this page; let that navigation finish before observing.
+                    deadline = time.monotonic() + 10
+                    while time.monotonic() < deadline and not passed():
+                        time.sleep(0.25)
+                    if not passed():
+                        # The session cookie is set either way; a reload shows it (navigation, not input).
+                        print("LinkedIn window closed without a refresh; reloading the page", flush=True)
+                        mark("reload")
+                        state["browser"].call("Page.reload")
+                        while time.monotonic() < deadline + 10 and not passed():
+                            time.sleep(0.25)
                     state["page"] = state["browser"].observe(screenshot=False)
                 if decision["choice"] not in {"DONE", "BLOCKED"}:
                     state["goal"] = plan[stage][0]
@@ -383,7 +415,7 @@ def main():
             "status": state["status"],
             "stages_completed": f"{stage}/{len(plan)}",
             "final_url": state["page"]["url"],
-            "show": args.show,
+            "shows": args.show,
             "when": args.when,
             "tickets": args.tickets,
             "auto_approve": args.auto_approve,

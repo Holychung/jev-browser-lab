@@ -91,7 +91,7 @@ uv run --env-file .env python examples/run.py \
 
 `uv run --env-file .env python examples/flights.py --keep-open` performs the flight search, checks the actual route/date/results, and saves its trace. It does not select or book a flight.
 
-`uv run --env-file .env python examples/telecharge.py --show 'The Great Gatsby' --when 8:00PM` enters one Telecharge Lottery + Rush drawing. It starts on the framed SocialToaster page, signs in only through a LinkedIn session already saved in the automation Chrome profile, and types nothing. A 4800 px viewport puts the whole list in one observation. Each Enter click waits for an approve file unless `--auto-approve` is given; code still refuses an Enter on any other card, never clicks one twice, and reads the result again from a fresh page load.
+`uv run --env-file .env python examples/telecharge.py --show 'The Great Gatsby' --when 8:00PM` enters Telecharge Lottery + Rush drawings; repeat `--show` to enter several in one run. It starts on the framed SocialToaster page, signs in only through a LinkedIn session already saved in the automation Chrome profile, and types nothing. A 4800 px viewport puts the whole list in one observation. Each Enter click waits for an approve file unless `--auto-approve` is given; code still refuses an Enter on any other card, never clicks one twice, and reads the result again from a fresh page load.
 
 ## Why it moves
 

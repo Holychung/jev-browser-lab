@@ -57,6 +57,9 @@ class Recorder:
                     params = event["params"]
                     ms = max(1, round((params["metadata"]["timestamp"] - self.epoch) * 1000))
                     (self.frames / f"{ms:07d}.jpg").write_bytes(base64.b64decode(params["data"]))
+                    # What each frame shows (device size, scroll offset), for frames that change shape.
+                    with (self.frames / "metadata.jsonl").open("a") as log:
+                        log.write(json.dumps({"ms": ms, **params["metadata"]}) + "\n")
                     self.browser.call("Page.screencastFrameAck", sessionId=params["sessionId"])
                 self.stopped.wait(0.015)
         except Exception as e:

@@ -57,10 +57,25 @@ cut = sum(b - a for a, b in pauses if b <= end_wall)
 video_end = end_wall - cut
 frame_files = sorted((int(p.stem), p) for p in (source / "screencast").glob("*.jpg"))
 viewport_w, viewport_h = summary["viewport"]
-show, when = summary["show"], summary.get("when", "")
+# Recordings made before several shows were allowed saved a single "show".
+shows, when = summary.get("shows") or [summary["show"]], summary.get("when", "")
 verified = summary.get("verified_after_reload") or []
 confirmed = bool(verified) and all(p["entered"] for p in verified)
-stage_names = ["Sign in (saved LinkedIn session)", "Open Lottery", f"{summary['tickets']} tickets", "Enter"]
+popup = [e for e in events if e["kind"] == "popup"]
+signed_in_here = bool(popup)
+stage_names = [
+    "Sign in with LinkedIn" if signed_in_here else "Sign in (saved session)",
+    "Open Lottery",
+    f"{summary['tickets']} tickets",
+    "Enter" if len(shows) == 1 else f"Enter {len(shows)} shows",
+]
+
+
+def popup_open(t):
+    """True while the LinkedIn window is open (it is a separate window, so not in the screencast)."""
+    opened = [e["t"] for e in popup if e["phase"] == "open" and e["t"] <= t]
+    closed = [e["t"] for e in popup if e["phase"] == "closed" and e["t"] <= t]
+    return bool(opened) and (not closed or closed[-1] < opened[-1])
 
 
 def wall(vt):
@@ -83,12 +98,16 @@ _cache = {}
 
 
 def screenshot_at(t):
+    """The frame at wall time t, and whether it holds the whole tall view."""
     path = next((p for ms, p in reversed(frame_files) if ms <= t), frame_files[0][1])
     if path not in _cache:
         _cache.clear()
         shot = Image.open(path).convert("RGB")
-        # Screencast frames can be downscaled; bring them back to viewport pixels.
-        _cache[path] = shot.resize((viewport_w, viewport_h), Image.LANCZOS) if shot.width != viewport_w else shot
+        full = abs(shot.width / shot.height - viewport_w / viewport_h) < 0.01
+        # Screencast frames can be downscaled; bring them back to viewport pixels. Chrome has also sent
+        # short frames of the page top near the end of a run; those are shown at panel width.
+        size = (viewport_w, viewport_h) if full else (PANEL_W, round(shot.height * PANEL_W / shot.width))
+        _cache[path] = (shot.resize(size, Image.LANCZOS) if shot.size != size else shot, full)
     return _cache[path]
 
 
@@ -118,11 +137,13 @@ def draw_frame(vt):
     d.text((186, 27), "×  TypeSafe Jev", font=font(22), fill=muted)
     d.rounded_rectangle((1287, 24, 1499, 59), radius=17, fill="#dfebd9")
     d.text((1310, 32), "REAL WEB  ·  1× SPEED", font=font(14, True), fill=green)
-    d.text((36, 80), f"Telecharge lottery entered in {video_end / 1000:.1f} s", font=font(40, True), fill=ink)
+    count = "1 lottery" if len(shows) == 1 else f"{len(shows)} lotteries"
+    title = f"Signed in and entered {count} in" if signed_in_here else f"Telecharge: {count} entered in"
+    d.text((36, 80), f"{title} {video_end / 1000:.1f} s", font=font(40, True), fill=ink)
+    start = "Sign In → LinkedIn" if signed_in_here else "Signed in"
     d.text(
         (38, 136),
-        f"Signed in → Lottery → {show}{' ' + when if when else ''} → {summary['tickets']} tickets → Enter. "
-        f"Full list in one {viewport_h} px view.",
+        f"{start} → Lottery → {', '.join(shows)}{' ' + when if when else ''} → Enter. One {viewport_h} px view.",
         font=font(19),
         fill=muted,
     )
@@ -132,17 +153,23 @@ def draw_frame(vt):
     for j, c in enumerate(["#de8278", "#d6bd6e", "#8dbd8a"]):
         d.ellipse((54 + j * 19, 195, 63 + j * 19, 204), fill=c)
     d.text((145, 191), "rush.telecharge.com", font=mono(13), fill="#d4d6d5")
-    top = camera(t)
-    shot = screenshot_at(t).crop((0, top, PANEL_W, top + PANEL_H))
-    canvas.paste(shot, (36, 216))
+    shot, full = screenshot_at(t)
+    top = camera(t) if full else 0
+    view = Image.new("RGB", (PANEL_W, PANEL_H), "white")
+    view.paste(shot.crop((0, top, PANEL_W, min(shot.height, top + PANEL_H))), (0, 0))
+    canvas.paste(view, (36, 216))
     # Outline the chosen element until its input runs (or code refuses it); the page may reflow after.
     ends = sorted(acted + [e["t"] for e in events if e["kind"] == "refused"])
     recent = [e for e in targets if e["t"] <= t < next((a for a in ends if a >= e["t"]), e["t"] + 1200)]
-    if recent:
+    if recent and full:
         r = recent[-1]["rect"]
         box = (36 + r["x"] - 4, 216 + r["y"] - top - 4, 36 + r["x"] + r["w"] + 4, 216 + r["y"] - top + r["h"] + 4)
         if box[1] >= 216 and box[3] <= 216 + PANEL_H:
             d.rounded_rectangle(box, radius=8, outline=green, width=4)
+    if popup_open(t):
+        d.rounded_rectangle((316, 820, 876, 900), radius=14, fill="#202124")
+        d.text((340, 834), "LinkedIn window signing in", font=font(21, True), fill="white")
+        d.text((340, 866), "Saved session in the automation profile; nothing typed", font=font(15), fill="#d4d6d5")
 
     # Timer.
     x = 1189
@@ -176,12 +203,14 @@ def draw_frame(vt):
     elif final and entered:
         d.rounded_rectangle((x, y0, 1499, y0 + 220), radius=14, fill="#dfebd9" if confirmed else "#f4ead3")
         d.text((x + 20, y0 + 20), "Lottery Entered!", font=font(24, True), fill=green if confirmed else amber)
-        card = entered[-1]["card"] or {}
-        for k, line in enumerate(textwrap.wrap(f"{card.get('show')} · {card.get('date')}", 30)[:3]):
-            d.text((x + 20, y0 + 60 + k * 24), line, font=font(16), fill=ink)
-        d.text((x + 20, y0 + 140), f"{card.get('tickets')} tickets", font=font(16), fill=ink)
+        cards = [e["card"] or {} for e in entered][-4:]
+        for k, card in enumerate(cards):
+            y = y0 + 60 + k * 28
+            d.line([(x + 22, y + 9), (x + 26, y + 13), (x + 33, y + 4)], fill=green, width=2)
+            name = card.get("show") or ""
+            d.text((x + 42, y), name if len(name) <= 30 else name[:29] + "…", font=font(16), fill=ink)
         verdict = "Verified on a fresh page load" if confirmed else "Not confirmed on a fresh page load"
-        d.text((x + 20, y0 + 176), verdict, font=font(15, True), fill=green if confirmed else red)
+        d.text((x + 20, y0 + 180), verdict, font=font(15, True), fill=green if confirmed else red)
     elif refused:
         d.text((x + 20, y0 + 20), "Choice refused by code", font=font(21, True), fill=red)
         for k, line in enumerate(textwrap.wrap(refused[-1]["reason"], 30)[:4]):
