@@ -27,7 +27,7 @@ BLUR_SCRIPT = """(css => {
 
 
 class Recorder:
-    def __init__(self, browser, folder, blur_selectors=()):
+    def __init__(self, browser, folder, blur_selectors=(), size=(1120, 780)):
         self.browser = browser
         self.frames = Path(folder) / "screencast"
         self.frames.mkdir(parents=True, exist_ok=False)
@@ -41,7 +41,10 @@ class Recorder:
         self.epoch = time.time()
         first = browser.call("Page.captureScreenshot", format="jpeg", quality=85)["data"]
         (self.frames / "000000.jpg").write_bytes(base64.b64decode(first))
-        browser.call("Page.startScreencast", format="jpeg", quality=85, maxWidth=1120, maxHeight=780, everyNthFrame=1)
+        width, height = size
+        browser.call(
+            "Page.startScreencast", format="jpeg", quality=85, maxWidth=width, maxHeight=height, everyNthFrame=1
+        )
         self.worker = threading.Thread(target=self._capture, daemon=True)
         self.worker.start()
 
