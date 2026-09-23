@@ -13,6 +13,18 @@ from browser_harness.helpers import cdp
 READ_STATE = Path(__file__).with_name("snapshot.js").read_text()
 MARKER = f"(() => {{ const state={READ_STATE}; return state?.marker ?? null; }})()"
 
+# Framework cards (Angular/React) are often plain divs with a JS click listener and no role or href.
+# Record listener targets before any page script runs, so the snapshot can offer them as buttons.
+CLICK_TRACKER = """(() => {
+  const clickable = window.__jevClickable = new Set();
+  const original = EventTarget.prototype.addEventListener;
+  EventTarget.prototype.addEventListener = function (type, ...rest) {
+    if (type === 'click' && this instanceof Element) clickable.add(this);
+    return original.call(this, type, ...rest);
+  };
+})()"""
+
+
 class StalePage(ValueError):
     """A decision no longer refers to the observed page."""
 
@@ -25,6 +37,8 @@ class Browser:
         self.call("Emulation.setDeviceMetricsOverride", width=1120, height=780, deviceScaleFactor=1, mobile=False)
         # Keep rAF/menus rendering in an owned background tab, without activating the user's Chrome tab.
         self.call("Emulation.setFocusEmulationEnabled", enabled=True)
+        self.call("Page.enable")
+        self.call("Page.addScriptToEvaluateOnNewDocument", source=CLICK_TRACKER)
         self.call("Page.navigate", url=url)
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
@@ -74,6 +88,33 @@ class Browser:
                 )
             except RuntimeError:
                 pass
+            # SPA routers change the URL asynchronously, and may re-render the old view before the new
+            # one. If a click changes the URL within 300 ms, wait until the text has changed and then held
+            # still for 400 ms (cap 5 s).
+            try:
+                self.call(
+                    "Runtime.evaluate",
+                    expression="""new Promise(resolve => {
+                      const before=window.__jevBefore; window.__jevBefore=null;
+                      if (!before) return resolve();
+                      const start=performance.now();
+                      let last=before[1], still=0;
+                      const tick=()=>{
+                        const elapsed=performance.now()-start, text=document.body?.innerText;
+                        if (location.href===before[0]) {
+                          return elapsed>300 ? resolve() : setTimeout(tick,50);
+                        }
+                        still = text===last ? still+1 : 0; last=text;
+                        if ((text!==before[1] && still>=4) || elapsed>5000) resolve();
+                        else setTimeout(tick,100);
+                      };
+                      tick();
+                    })""",
+                    awaitPromise=True,
+                    returnByValue=True,
+                )
+            except RuntimeError:
+                pass
         for attempt in range(10):
             try:
                 return browser_operation(
@@ -102,6 +143,8 @@ class Browser:
             raise StalePage("Page changed since this decision. Observe again.")
         if action["kind"] == "wait":
             time.sleep(0.1)
+        if action["kind"] == "click":
+            self.evaluate("window.__jevBefore=[location.href, document.body?.innerText]; 0")
         result = browser_operation({"operation": "act", "session": self.session, "action": action, "text": text})
         self.after_input = action if action["kind"] != "wait" else None
         return result
