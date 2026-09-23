@@ -91,6 +91,8 @@ uv run --env-file .env python examples/run.py \
 
 `uv run --env-file .env python examples/flights.py --keep-open` performs the flight search, checks the actual route/date/results, and saves its trace. It does not select or book a flight.
 
+`uv run --env-file .env python examples/telecharge.py --show 'The Great Gatsby' --when 8:00PM` enters one Telecharge Lottery + Rush drawing. It starts on the framed SocialToaster page, signs in only through a LinkedIn session already saved in the automation Chrome profile, and types nothing. A 4800 px viewport puts the whole list in one observation. Each Enter click waits for an approve file unless `--auto-approve` is given; code still refuses an Enter on any other card, never clicks one twice, and reads the result again from a fresh page load.
+
 ## Why it moves
 
 - **One request per decision cycle.** Operation and target heads share the same observed state.
@@ -135,7 +137,7 @@ node --check jev_ultrafast/snapshot.js
 uv build
 ```
 
-Tests are offline. `uv run python scripts/check_guards.py` checks real controls in a local browser without model calls. Live examples and recording scripts make paid API calls. `scripts/record_flights.py <new-folder>` captures original browser timestamps; `scripts/render_demo.py <recording-folder>` renders that verified run at 1× and crops out the Google account strip. Credentials and raw traces stay ignored.
+Tests are offline. `uv run python scripts/check_guards.py` checks real controls in a local browser without model calls. Live examples and recording scripts make paid API calls. `scripts/record_flights.py <new-folder>` captures original browser timestamps; `scripts/render_demo.py <recording-folder>` renders that verified run at 1× and crops out the Google account strip. `examples/telecharge.py --record` and `scripts/render_telecharge.py <recording-folder>` do the same for a lottery entry: the camera pans over the tall view, and the account name, e-mail and phone are blurred at capture. Credentials and raw traces stay ignored.
 
 ---
 
