@@ -1,4 +1,4 @@
-"""Live Lucky Seat run: log in, pick New York, open Hadestown, enter its lottery.
+"""Live Lucky Seat run: log in, pick New York, open a show (--show), fill its lottery form.
 
 uv run --env-file .env python examples/luckyseat.py
 
@@ -18,6 +18,7 @@ from pathlib import Path
 
 from jev_ultrafast import Agent
 from jev_ultrafast.browser import StalePage
+from jev_ultrafast.recorder import Recorder
 
 # Start on the login route: a client-side jump from /home swaps the URL before the form renders.
 URL = "https://www.luckyseat.com/account/login"
@@ -25,34 +26,44 @@ POPUPS = (
     " Accept the cookie notice if it blocks the page. Close unrelated pop-ups such as a newsletter "
     "sign-up without filling or submitting them."
 )
-# (goal, independent check). A check is JS returning true once the stage is really complete.
-STAGES = [
-    (
-        "Log in to Lucky Seat. Choose TYPE_TEXT on the Email and Password fields; their values are "
-        "filled automatically. Then click Log in. DONE once the login form is gone." + POPUPS,
-        "!location.pathname.startsWith('/account/login') && !document.querySelector('input[type=password]')",
-    ),
-    (
-        "Set the city to New York and open the Hadestown event. DONE once the Hadestown lottery page "
-        "is open." + POPUPS,
-        "location.pathname.includes('/shows/hadestown')",
-    ),
-    (
-        "On this Hadestown lottery page, click the Select All button under Select your performance, "
-        "so that every performance checkbox is checked. Scroll to find it if needed. Do not touch the "
-        "ticket count or Submit Entry yet. DONE once every performance checkbox is checked." + POPUPS,
-        "(b => b.length > 0 && b.every(x => x.checked))([...document.querySelectorAll('input[type=checkbox]')])",
-    ),
-    (
-        "Set Select number of tickets to 1. Leave the performance checkboxes as they are and do not "
-        "click Submit Entry yet. DONE once the ticket count shows 1." + POPUPS,
-        "[...document.querySelectorAll('input[type=number]')].some(i => i.value === '1')",
-    ),
-    (
-        "Click Submit Entry. DONE once the page confirms the lottery entry." + POPUPS,
-        None,
-    ),
-]
+
+
+def stages(show):
+    """(goal, independent check) per stage. A check is JS returning true once the stage is complete."""
+    on_show = f"location.pathname.startsWith('/dash/shows/') && document.body.innerText.includes({json.dumps(show)})"
+    return [
+        (
+            "Log in to Lucky Seat. Choose TYPE_TEXT on the Email and Password fields; their values are "
+            "filled automatically. Then click Log in. DONE once the login form is gone." + POPUPS,
+            "!location.pathname.startsWith('/account/login') && !document.querySelector('input[type=password]')",
+        ),
+        (
+            f"Set the city to New York and open the {show} event. If it is not listed, change the category "
+            f"filter. DONE once the {show} lottery page is open." + POPUPS,
+            on_show,
+        ),
+        (
+            f"On this {show} lottery page, click the Select All button under Select your performance, so "
+            "that every performance checkbox is checked. Scroll to find it if needed. Do not touch the "
+            "ticket count or Submit Entry yet. DONE once every performance checkbox is checked." + POPUPS,
+            "(b => b.length > 0 && b.every(x => x.checked))([...document.querySelectorAll('input[type=checkbox]')])",
+        ),
+        (
+            "Set Select number of tickets to 1. Leave the performance checkboxes as they are and do not "
+            "click Submit Entry yet. DONE once the ticket count shows 1." + POPUPS,
+            "[...document.querySelectorAll('input[type=number]')].some(i => i.value === '1')",
+        ),
+        (
+            "Click Submit Entry. DONE once the page confirms the lottery entry." + POPUPS,
+            None,
+        ),
+    ]
+
+
+STAGES = stages("Hadestown")
+STAGE_NAMES = ["Log in", "New York → Hadestown", "Select all performances", "1 ticket", "Submit entry"]
+# Blurred in recordings: the typed email, the password's length, and the account name in the header.
+BLUR = ["input[type=email]", "input[type=password]", "header .menu-item-has-children > a"]
 # Account pages show personal details; stop before their text can be sent to a model.
 PRIVATE = re.compile(r"/account/(?!login)")
 SUBMIT = re.compile(r"\b(enter|submit|confirm|register|sign up|buy|pay)\b", re.IGNORECASE)
@@ -111,12 +122,23 @@ def wait_for_verdict(folder, action, agent):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", default="artifacts/luckyseat/latest")
+    parser.add_argument("--record", action="store_true", help="Record a redacted screencast for render_luckyseat.py")
+    parser.add_argument("--show", default="Hadestown", help="Event title exactly as listed on Lucky Seat")
     args = parser.parse_args()
+    global STAGES, STAGE_NAMES
+    STAGES = stages(args.show)
+    STAGE_NAMES = [*STAGE_NAMES[:1], f"New York → {args.show}", *STAGE_NAMES[2:]]
     folder = Path(args.output).resolve()
     folder.mkdir(parents=True, exist_ok=True)
     stage, false_dones = 0, 0
     agent = Agent(URL, STAGES[stage][0])
     state = agent.state
+    recorder = Recorder(agent.browser, folder, BLUR) if args.record else None
+
+    def mark(kind, **fields):
+        if recorder:
+            recorder.mark(kind, **fields)
+
     started = time.perf_counter()
 
     def passed():
@@ -129,6 +151,7 @@ def main():
     def advance(reason):
         nonlocal stage, false_dones
         print(f"STAGE {stage + 1}/{len(STAGES)} complete ({reason})", flush=True)
+        mark("stage", index=stage, name=STAGE_NAMES[stage])
         stage, false_dones = stage + 1, 0
         if stage < len(STAGES):
             state["goal"] = STAGES[stage][0]
@@ -148,29 +171,46 @@ def main():
                     continue
                 false_dones += 1
                 print(f"STAGE {stage + 1}: DONE claimed but the page check failed ({false_dones})", flush=True)
+                mark("refused", reason="DONE rejected by page check")
                 if false_dones >= 3:
                     state["status"] = "blocked"
                     break
                 note("DONE was rejected because this stage is not complete yet. Choose the next operation.")
             if state["status"] == "blocked":
-                break
+                chose_blocked = state["decisions"] and state["decisions"][-1]["choice"] == "BLOCKED"
+                if not chose_blocked or false_dones >= 3:
+                    break
+                false_dones += 1
+                print(f"STAGE {stage + 1}: BLOCKED rejected ({false_dones})", flush=True)
+                mark("refused", reason="BLOCKED rejected: controls may be off screen")
+                note(
+                    "BLOCKED was rejected. The needed control may be off screen: use SCROLL_UP to reach "
+                    "filters at the top of the page, or SCROLL_DOWN, then continue."
+                )
+                continue
             try:
                 agent.command("predict")
                 decision = state["decision"]
                 if premature_login(agent):
                     print("REFUSED: login button clicked while the Password field is empty", flush=True)
+                    mark("refused", reason="Login clicked with an empty password")
                     note("The Password field is still empty. Choose TYPE_TEXT on the Password field first.")
                     continue
                 action = gated(agent)
-                paused = 0.0
                 if action:
+                    mark("gate", label=action["label"], confidence=decision["confidence"])
+                    if recorder:
+                        recorder.pause()
                     before = time.perf_counter()
-                    if not wait_for_verdict(folder, action, agent):
-                        state["status"] = "rejected"
-                        break
+                    approved = wait_for_verdict(folder, action, agent)
                     paused = time.perf_counter() - before
                     started += paused
                     state["started_at"] += paused
+                    if not approved:
+                        state["status"] = "rejected"
+                        break
+                    if recorder:
+                        recorder.resume()
                 agent.command("act", {"fingerprint": state["page"]["fingerprint"]})
                 if decision["choice"] not in {"DONE", "BLOCKED"}:
                     state["goal"] = STAGES[stage][0]
@@ -191,12 +231,22 @@ def main():
                 f"jev={decision['latency_ms']}ms text={last.get('text')!r}",
                 flush=True,
             )
+            mark(
+                "step",
+                operation=decision["operation"],
+                label=last.get("action", decision["choice"]),
+                confidence=decision["confidence"],
+                target_confidence=decision["target_confidence"],
+                jev_ms=decision["latency_ms"],
+                text=last.get("text"),
+            )
             if state["status"] == "ready" and passed():
                 advance("page check passed")
     finally:
         snapshot = agent.snapshot()
         for d in snapshot["decisions"]:
-            d.pop("request", None)
+            # Keep the element table each decision saw (for diagnosis); drop the bulky page text.
+            d["elements"] = d.pop("request", {}).get("state", {}).get("elements", [])
         cost = sum(d["usage"].get("cost", 0) for d in snapshot["decisions"])
         cost += sum(t["usage"].get("cost", 0) for t in snapshot["text_calls"])
         summary = {
@@ -210,6 +260,9 @@ def main():
             "elapsed_ms_excluding_pauses": round((time.perf_counter() - started) * 1000),
         }
         snapshot["page"].pop("screenshot", None)
+        if recorder:
+            snapshot["recording"] = recorder.stop()
+            print("recording:", {k: v for k, v in snapshot["recording"].items() if k != "events"})
         (folder / "state.json").write_text(json.dumps({**snapshot, "summary": summary}, indent=2, default=str))
         print(json.dumps(summary, indent=2))
         if not PRIVATE.search(state["page"]["url"]):
