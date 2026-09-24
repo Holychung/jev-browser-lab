@@ -152,6 +152,12 @@ uv build
 
 Tests are offline. `uv run python scripts/check_guards.py` checks real controls in a local browser without model calls. Live examples and recording scripts make paid API calls. `scripts/record_flights.py <new-folder>` captures original browser timestamps; `scripts/render_demo.py <recording-folder>` renders that verified run at 1× and crops out the Google account strip. `examples/telecharge.py --record` and `scripts/render_telecharge.py <recording-folder>` do the same for a lottery entry: the camera pans over the tall view, and the account name, e-mail and phone are blurred at capture. Credentials and raw traces stay ignored.
 
+## Disclaimer
+
+This is a personal project, shared for learning and reference. It is not affiliated with, endorsed by, or supported by Telecharge, Lucky Seat, SocialToaster, LinkedIn, TypeSafe, or Browser Use.
+
+The lottery examples act on real websites with your own accounts. Check each site's terms before you run them; some sites do not allow automated entries. You are responsible for how you use this code, including any suspended account or lost entry. The software is provided as is, without warranty, under the [MIT License](LICENSE).
+
 ---
 
 [Browser Use](https://github.com/browser-use/browser-use) · [Browser Harness](https://github.com/browser-use/browser-harness) · [TypeSafe speculative fan-out](https://docs.typesafe.ai/patterns/fan-out)
