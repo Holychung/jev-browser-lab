@@ -23,13 +23,14 @@ def credential(action):
 
 
 class Agent:
-    def __init__(self, url, goals, *, record_dir=None, screenshots=False, viewport=(1120, 780)):
+    def __init__(self, url, goals, *, record_dir=None, screenshots=False, viewport=(1120, 780), device=None):
         task = goals.strip() if isinstance(goals, str) else "\n".join(goals).strip()
         if not task:
             raise ValueError("Supply a task")
         plan = [task]
         self.pending_text = None
-        self.browser = Browser(url, viewport)
+        # A device (jev_ultrafast.android.Device) has the same observe/fresh/act interface as a browser tab.
+        self.browser = device or Browser(url, viewport)
         self.record_dir = Path(record_dir) if record_dir else None
         self.screenshots = screenshots or bool(record_dir)
         try:
