@@ -34,6 +34,8 @@ from jev_ultrafast.browser import StalePage
 PACKAGE = "com.hamilton.app"
 COUNTDOWN = re.compile(r"\b\d{2,3}:\d{2}:\d{2}\b")
 PERFORMANCE = re.compile(r"PERFORMANCE TIME ([A-Z][a-z]+ \d{1,2}, \d{4} \d{1,2}:\d{2}[ap]m)")
+# An entered performance's card replaces its details: "YOU’VE ENTERED! ... lottery for October 7, 7:00pm".
+ENTERED = re.compile(r"YOU.VE ENTERED!.*? for ([A-Z][a-z]+ \d{1,2}), (\d{1,2}:\d{2}[ap]m)")
 DATE = re.compile(r"[A-Z][a-z]+ \d{1,2}, \d{4}")
 TIME = re.compile(r"\d{1,2}:\d{2}[ap]m")
 # Controls any stage may use. Everything not allowed below is refused before it executes.
@@ -126,14 +128,24 @@ def card_of(nodes, node):
     return None
 
 
+def undated(performance):
+    """'October 7, 2026 7:00pm' -> 'October 7 7:00pm', the form an entered card names it by."""
+    return re.sub(r", \d{4} ", " ", performance)
+
+
 def read_cards(nodes):
-    """Every card on screen: performance -> the labels inside it."""
+    """Every card on screen: performance -> the labels inside it. Entered cards are keyed undated."""
     cards = {}
     for card in nodes:
+        entered = ENTERED.search(card["label"])
+        if entered:
+            cards[f"{entered.group(1)} {entered.group(2)}"] = {"enter_now": False, "entered": True,
+                                                               "inside": [card["label"]]}
+            continue
         match = card["clickable"] and PERFORMANCE.search(card["label"])
         if match:
             inside = [n["label"] for n in nodes if n is not card and n["label"] and contains(card["rect"], n["rect"])]
-            cards[match.group(1)] = {"enter_now": "Enter Now" in inside, "inside": inside}
+            cards[match.group(1)] = {"enter_now": "Enter Now" in inside, "entered": False, "inside": inside}
     return cards
 
 
@@ -431,7 +443,7 @@ def verify(device, performances):
     if not on_list(device.nodes):
         return None
     cards = scan(device)
-    return {p: cards.get(p) for p in performances}
+    return {p: cards.get(p) or cards.get(undated(p)) for p in performances}
 
 
 def main():
@@ -445,12 +457,24 @@ def main():
     parser.add_argument("--auto-approve", action="store_true", help="Submit the requested entries without pausing")
     parser.add_argument("--debug-trace", action="store_true", help="Also save each decision's element table")
     parser.add_argument("--record", action="store_true", help="Record the screen from the first entry to the last")
+    parser.add_argument(
+        "--verify-only", action="store_true", help="Only restart the app and re-read the --output run's targets"
+    )
     args = parser.parse_args()
-    if not args.all and not args.performance:
+    if not args.all and not args.performance and not args.verify_only:
         parser.error("give --performance at least once, or --all")
     folder = Path(args.output).resolve()
     folder.mkdir(parents=True, exist_ok=True)
     device = Device(PACKAGE, serial=args.serial, volatile=COUNTDOWN, hide=private, tap=tap_point)
+    if args.verify_only:
+        # A later, independent read of an earlier run. Its own check is kept as it was.
+        path = folder / "state.json"
+        trace = json.loads(path.read_text())
+        rescan = verify(device, trace["summary"]["targets"])
+        trace["summary"]["verified_after_restart_rescan"] = rescan
+        path.write_text(json.dumps(trace, indent=2, default=str))
+        print("VERIFIED after restart:", json.dumps(rescan, indent=2))
+        return
     started = time.perf_counter()
     submitted, dry_runs, results = set(), [], {}
 
@@ -461,7 +485,10 @@ def main():
         cards = scan(device)
         listed = [p for p, card in cards.items() if card["enter_now"]]
         print("Open for entry:", listed, flush=True)
-        closed = {p: card["inside"] for p, card in cards.items() if not card["enter_now"]}
+        entered = [p for p, card in cards.items() if card["entered"]]
+        if entered:
+            print("Already entered:", entered, flush=True)
+        closed = {p: card["inside"] for p, card in cards.items() if not card["enter_now"] and not card["entered"]}
         if closed:
             print("Listed without Enter Now:", closed, flush=True)
         targets = listed if args.all else args.performance

@@ -224,7 +224,8 @@ def test_blur_covers_the_name_between_every_two_reads():
 def test_end_card_reports_the_run_from_its_summary():
     from scripts.render_hamilton import results
 
-    open_card, entered_card = {"enter_now": True, "inside": ["Enter Now"]}, {"enter_now": False, "inside": []}
+    open_card = {"enter_now": True, "entered": False, "inside": ["Enter Now"]}
+    entered_card = {"enter_now": False, "entered": True, "inside": ["YOU’VE ENTERED!"]}
     shows = ["October 6, 2026 7:00pm", "October 7, 2026 7:00pm"]
     base = {"targets": shows, "entries_ms": 18_400, "jev_calls": 14, "cost_usd": 0.00137}
     dry = {**base, "dry_run": True, "dry_run_stops": [{}, {}], "submitted": [],
@@ -234,9 +235,19 @@ def test_end_card_reports_the_run_from_its_summary():
     assert rows == [("Real time", "18.4 s"), ("Jev decisions", "14"), ("Model cost", "US$0.0014"),
                     ("Restarted app, still open", "2 / 2")]
     real = {**base, "dry_run": False, "dry_run_stops": [], "submitted": [shows[0]],
-            "verified_after_restart": {shows[0]: entered_card, shows[1]: open_card}}
+            "verified_after_restart": {shows[0]: None, shows[1]: open_card},
+            "verified_after_restart_rescan": {shows[0]: entered_card, shows[1]: open_card}}
     headline, detail, rows = results(real)
-    assert (headline, detail, rows[-1]) == ("1 / 2", "entries submitted", ("Restarted app, Enter Now gone", "1 / 2"))
+    assert (headline, detail, rows[-1]) == ("1 / 2", "entries submitted", ("Restarted app, marked entered", "1 / 2"))
+
+
+def test_an_entered_card_is_read_by_its_undated_performance():
+    card = {"index": 0, "class": "View", "resource_id": "", "clickable": False, "enabled": True, "checkable": False,
+            "checked": False, "selected": False, "scrollable": False, "rect": (0, 352, 1080, 900),
+            "label": "YOU’VE ENTERED! You have successfully entered the lottery for October 7, 7:00pm"}
+    cards = hamilton.read_cards([card])
+    assert cards == {"October 7 7:00pm": {"enter_now": False, "entered": True, "inside": [card["label"]]}}
+    assert hamilton.undated("October 7, 2026 7:00pm") == "October 7 7:00pm"
 
 
 def test_screen_checks_read_the_entry_page():

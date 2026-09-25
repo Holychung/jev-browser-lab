@@ -107,7 +107,8 @@ def font(size, bold=True):
 def results(summary):
     """The end card's headline and rows, taken from the run's own summary."""
     targets = summary["targets"]
-    verified = summary.get("verified_after_restart") or {}
+    # A later --verify-only read, when there is one, reads entered cards the run's own check missed.
+    verified = summary.get("verified_after_restart_rescan") or summary.get("verified_after_restart") or {}
     if summary["dry_run"]:
         done = len(summary["dry_run_stops"])
         still_open = sum(1 for card in verified.values() if card and card["enter_now"])
@@ -115,9 +116,9 @@ def results(summary):
         check = ("Restarted app, still open", f"{still_open} / {len(targets)}")
     else:
         done = len(summary["submitted"])
-        gone = sum(1 for p in summary["submitted"] if verified.get(p) and not verified[p]["enter_now"])
+        entered = sum(1 for p in summary["submitted"] if (verified.get(p) or {}).get("entered"))
         headline, detail = f"{done} / {len(targets)}", "entries submitted"
-        check = ("Restarted app, Enter Now gone", f"{gone} / {len(targets)}")
+        check = ("Restarted app, marked entered", f"{entered} / {len(targets)}")
     rows = [
         ("Real time", f"{summary['entries_ms'] / 1000:.1f} s"),
         ("Jev decisions", str(summary["jev_calls"])),
