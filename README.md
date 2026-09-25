@@ -12,7 +12,7 @@ Give it one goal. [TypeSafe's Jev](https://docs.typesafe.ai/introduction) picks 
 
 **Signed out → LinkedIn → three Broadway lottery entries in 17.5 seconds.** One run on the real Telecharge Lottery + Rush site, nothing typed, and every entry checked again on a fresh page load.
 
-<a href="docs/telecharge-demo.mp4"><img src="docs/telecharge-demo.gif" alt="A real Telecharge run at 1× speed: sign in with LinkedIn, open Lottery, and enter three shows, with Jev's decisions beside the page" width="100%" /></a>
+<a href="docs/telecharge/telecharge-demo.mp4"><img src="docs/telecharge/telecharge-demo.gif" alt="A real Telecharge run at 1× speed: sign in with LinkedIn, open Lottery, and enter three shows, with Jev's decisions beside the page" width="100%" /></a>
 
 | Time | What happens |
 | --- | --- |
@@ -25,7 +25,7 @@ Give it one goal. [TypeSafe's Jev](https://docs.typesafe.ai/introduction) picks 
 
 6 actions, 6 Jev calls, no refused choices, $0.00175.
 
-[Watch the MP4](docs/telecharge-demo.mp4) · [Run trace](docs/telecharge-measurement.json) · [Flights demo](docs/demo.mp4) · [Measurements](docs/performance.md) · [Read the loop](jev_ultrafast/agent.py)
+[Watch the MP4](docs/telecharge/telecharge-demo.mp4) · [Run trace](docs/telecharge/measurement.json) · [Guide in Traditional Chinese](docs/telecharge/README.md) · [Flights demo](docs/demo.mp4) · [Measurements](docs/performance.md) · [Read the loop](jev_ultrafast/agent.py)
 
 ## The action space
 
@@ -133,7 +133,7 @@ Every executed target is resolved from an observed node. The executor rechecks p
 
 ## Evidence and limits
 
-The Telecharge video covers **17,459 ms**, from the first recorded frame to the third confirmed entry, at 1×. It started with no Telecharge session; the automation Chrome profile already held LinkedIn and Google sessions. The LinkedIn window accounts for 7.9 s and cannot appear in the screencast of the page's own tab. Each entry was confirmed on its card, and a fresh page load then reported all three entered. For the last 0.6 s Chrome sent frames of the page top instead of the full 4800 px view, so the final Enter click is not visible. This is one run, not a reliability benchmark; its trace is [telecharge-measurement.json](docs/telecharge-measurement.json).
+The Telecharge video covers **17,459 ms**, from the first recorded frame to the third confirmed entry, at 1×. It started with no Telecharge session; the automation Chrome profile already held LinkedIn and Google sessions. The LinkedIn window accounts for 7.9 s and cannot appear in the screencast of the page's own tab. Each entry was confirmed on its card, and a fresh page load then reported all three entered. For the last 0.6 s Chrome sent frames of the page top instead of the full 4800 px view, so the final Enter click is not visible. This is one run, not a reliability benchmark; its trace is [measurement.json](docs/telecharge/measurement.json).
 
 **Zürich → London on Google Flights in 7.1 seconds.** The [Flights video](docs/demo.mp4) is a **7,073 ms** run. Timing starts after initial page observation and includes model calls, generated text, browser work, stale decisions, and loading waits. A fresh independent check verifies the one-way setting, Zürich, London, September 20, 2026, and visible flight options. The video plays at 1×, with no opening hold and a 0.5-second final hold.
 
