@@ -1,0 +1,107 @@
+{
+  "run": "examples/hamilton.py --all --auto-approve --record, 2026-09-25, Android emulator (API 36, arm64)",
+  "app": "com.hamilton.app, Broadway lottery",
+  "performances": [
+    "October 6, 2026 7:00pm",
+    "October 7, 2026 7:00pm",
+    "October 8, 2026 7:00pm",
+    "October 9, 2026 7:00pm",
+    "October 10, 2026 1:00pm",
+    "October 10, 2026 7:00pm",
+    "October 11, 2026 1:00pm",
+    "October 11, 2026 7:00pm"
+  ],
+  "tickets": 2,
+  "submitted": [
+    "October 6, 2026 7:00pm",
+    "October 7, 2026 7:00pm",
+    "October 8, 2026 7:00pm",
+    "October 9, 2026 7:00pm",
+    "October 10, 2026 1:00pm",
+    "October 10, 2026 7:00pm",
+    "October 11, 2026 1:00pm",
+    "October 11, 2026 7:00pm"
+  ],
+  "entries_ms": 84510,
+  "jev_calls": 47,
+  "cost_usd": 0.004236,
+  "actions": 46,
+  "per_performance": {
+    "October 6, 2026 7:00pm": {
+      "status": "complete",
+      "actions": 6,
+      "jev_calls": 6,
+      "median_jev_ms": 200
+    },
+    "October 7, 2026 7:00pm": {
+      "status": "complete",
+      "actions": 6,
+      "jev_calls": 7,
+      "median_jev_ms": 204
+    },
+    "October 8, 2026 7:00pm": {
+      "status": "complete",
+      "actions": 5,
+      "jev_calls": 5,
+      "median_jev_ms": 185
+    },
+    "October 9, 2026 7:00pm": {
+      "status": "complete",
+      "actions": 6,
+      "jev_calls": 6,
+      "median_jev_ms": 198
+    },
+    "October 10, 2026 1:00pm": {
+      "status": "complete",
+      "actions": 6,
+      "jev_calls": 6,
+      "median_jev_ms": 210
+    },
+    "October 10, 2026 7:00pm": {
+      "status": "complete",
+      "actions": 6,
+      "jev_calls": 6,
+      "median_jev_ms": 201
+    },
+    "October 11, 2026 1:00pm": {
+      "status": "complete",
+      "actions": 5,
+      "jev_calls": 5,
+      "median_jev_ms": 190
+    },
+    "October 11, 2026 7:00pm": {
+      "status": "complete",
+      "actions": 6,
+      "jev_calls": 6,
+      "median_jev_ms": 211
+    }
+  },
+  "verified_after_restart": {
+    "how": "examples/hamilton.py --verify-only: app restarted, Broadway list read from the top",
+    "entered": {
+      "October 6, 2026 7:00pm": true,
+      "October 7, 2026 7:00pm": true,
+      "October 8, 2026 7:00pm": true,
+      "October 9, 2026 7:00pm": true,
+      "October 10, 2026 1:00pm": true,
+      "October 10, 2026 7:00pm": true,
+      "October 11, 2026 1:00pm": true,
+      "October 11, 2026 7:00pm": true
+    }
+  },
+  "video": {
+    "files": [
+      "hamilton-demo.gif",
+      "hamilton-demo.mp4"
+    ],
+    "render": "scripts/render_hamilton.py --speed 2 --skip-middle --gif",
+    "speed": 2,
+    "kept": [
+      "October 6, 2026 7:00pm",
+      "October 11, 2026 7:00pm"
+    ],
+    "screen_segments": 1,
+    "taps": 32,
+    "drags": 14
+  }
+}
