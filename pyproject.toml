@@ -7,6 +7,10 @@ license = "MIT"
 requires-python = ">=3.12"
 dependencies = ["browser-harness==0.1.13", "httpx[http2]>=0.28,<1"]
 
+[project.optional-dependencies]
+# Android apps: uiautomator2 reads the accessibility tree without waiting for the screen to go idle.
+android = ["uiautomator2==3.7.0"]
+
 [project.scripts]
 jev = "jev_ultrafast.demo:main"
 

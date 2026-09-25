@@ -104,6 +104,8 @@ uv run --env-file .env python examples/run.py \
 
 `uv run --env-file .env python examples/telecharge.py --show 'The Great Gatsby' --when 8:00PM` enters Telecharge Lottery + Rush drawings; repeat `--show` to enter several in one run. It starts on the framed SocialToaster page, signs in only through a LinkedIn session already saved in the automation Chrome profile, and types nothing. A 4800 px viewport puts the whole list in one observation. Each Enter click waits for an approve file unless `--auto-approve` is given; code still refuses an Enter on any other card, never clicks one twice, and reads the result again from a fresh page load.
 
+The same loop drives Android apps. [android.py](jev_ultrafast/android.py) reads the accessibility tree through uiautomator2, which does not wait for the screen to go idle, and taps observed nodes with adb; install it with `uv sync --extra android`. `uv run --env-file .env --extra android python examples/hamilton.py --all --dry-run` walks every open Broadway performance in the official Hamilton app on an emulator: it opens each entry page, keeps two tickets, ticks both confirmation boxes, and stops before Submit Your Entry, then restarts the app and reads the list again. Without `--dry-run`, each submit waits for an approve file unless `--auto-approve` is given. The app must already be signed in; nothing is typed, and the entrant's name is kept from the model. The app's Official Rules (Broadway Direct) say an entry may be disqualified for automated or programmed methods, so read them before submitting.
+
 ## Why it moves
 
 - **One request per decision cycle.** Operation and target heads share the same observed state.
@@ -124,6 +126,7 @@ Every executed target is resolved from an observed node. The executor rechecks p
 | [agent.py](jev_ultrafast/agent.py) | The complete loop and text-helper handoff |
 | [snapshot.js](jev_ultrafast/snapshot.js) | Atomic DOM snapshot, indexed controls, freshness guards |
 | [browser.py](jev_ultrafast/browser.py) | Browser connection, current geometry, execution |
+| [android.py](jev_ultrafast/android.py) | The same page shape from an Android app's accessibility tree |
 | [model.py](jev_ultrafast/model.py) | Dynamic operation/target heads and text generation |
 | [questions.py](jev_ultrafast/questions.py) | Model instructions |
 | [demo.py](jev_ultrafast/demo.py) | Local inspector |
@@ -138,7 +141,7 @@ In six alternating runs with identical models and settings, both versions passed
 
 The same policy opened the requested Wikipedia article in **2.798 s** and passed a local hotel search/filter task in **1.896 s**. Runs, failures, source hashes, and measurement boundaries are in [performance.md](docs/performance.md).
 
-A `DONE` choice still requires independent outcome verification. The DOM reader handles common HTML and ARIA controls, not the full accessible-name specification. Shadow roots, frames, canvas, uploads, pop-up tabs, nested scrolling, and arbitrary keyboard widgets remain outside this MVP. Owned tabs share the existing Chrome profile.
+A `DONE` choice still requires independent outcome verification. The DOM reader handles common HTML and ARIA controls, not the full accessible-name specification. Shadow roots, frames, canvas, uploads, pop-up tabs, nested scrolling, and arbitrary keyboard widgets remain outside this MVP. Owned tabs share the existing Chrome profile. On Android the tree holds only what is on screen and no scroll offsets, so the end of a list is known once a scroll there changed nothing; typing and WebView content are not supported yet.
 
 ## Development
 
@@ -150,11 +153,11 @@ node --check jev_ultrafast/snapshot.js
 uv build
 ```
 
-Tests are offline. `uv run python scripts/check_guards.py` checks real controls in a local browser without model calls. Live examples and recording scripts make paid API calls. `scripts/record_flights.py <new-folder>` captures original browser timestamps; `scripts/render_demo.py <recording-folder>` renders that verified run at 1× and crops out the Google account strip. `examples/telecharge.py --record` and `scripts/render_telecharge.py <recording-folder>` do the same for a lottery entry: the camera pans over the tall view, and the account name, e-mail and phone are blurred at capture. Credentials and raw traces stay ignored.
+Tests are offline. `uv run python scripts/check_guards.py` checks real controls in a local browser without model calls. Live examples and recording scripts make paid API calls. `scripts/record_flights.py <new-folder>` captures original browser timestamps; `scripts/render_demo.py <recording-folder>` renders that verified run at 1× and crops out the Google account strip. `examples/telecharge.py --record` and `scripts/render_telecharge.py <recording-folder>` do the same for a lottery entry: the camera pans over the tall view, and the account name, e-mail and phone are blurred at capture. `examples/hamilton.py --record` saves the emulator's own screen, and `scripts/render_hamilton.py <run> --speed 2` renders it with the entrant's name blurred, each tap and drag marked, and a caption bar that names each step and prints the speed beside the real elapsed time. Credentials and raw traces stay ignored.
 
 ## Disclaimer
 
-This is a personal project, shared for learning and reference. It is not affiliated with, endorsed by, or supported by Telecharge, Lucky Seat, SocialToaster, LinkedIn, TypeSafe, or Browser Use.
+This is a personal project, shared for learning and reference. It is not affiliated with, endorsed by, or supported by Telecharge, Lucky Seat, SocialToaster, Hamilton, Broadway Direct, LinkedIn, TypeSafe, or Browser Use.
 
 The lottery examples act on real websites with your own accounts. Check each site's terms before you run them; some sites do not allow automated entries. You are responsible for how you use this code, including any suspended account or lost entry. The software is provided as is, without warranty, under the [MIT License](LICENSE).
 
