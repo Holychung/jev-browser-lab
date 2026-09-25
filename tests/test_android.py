@@ -221,6 +221,24 @@ def test_blur_covers_the_name_between_every_two_reads():
     assert windows[0][0] == 0.0 and windows[-1][1] == 2.0 + PAD_SECONDS
 
 
+def test_end_card_reports_the_run_from_its_summary():
+    from scripts.render_hamilton import results
+
+    open_card, entered_card = {"enter_now": True, "inside": ["Enter Now"]}, {"enter_now": False, "inside": []}
+    shows = ["October 6, 2026 7:00pm", "October 7, 2026 7:00pm"]
+    base = {"targets": shows, "entries_ms": 18_400, "jev_calls": 14, "cost_usd": 0.00137}
+    dry = {**base, "dry_run": True, "dry_run_stops": [{}, {}], "submitted": [],
+           "verified_after_restart": {shows[0]: open_card, shows[1]: open_card}}
+    headline, detail, rows = results(dry)
+    assert (headline, "dry run" in detail) == ("2 / 2", True)
+    assert rows == [("Real time", "18.4 s"), ("Jev decisions", "14"), ("Model cost", "US$0.0014"),
+                    ("Restarted app, still open", "2 / 2")]
+    real = {**base, "dry_run": False, "dry_run_stops": [], "submitted": [shows[0]],
+            "verified_after_restart": {shows[0]: entered_card, shows[1]: open_card}}
+    headline, detail, rows = results(real)
+    assert (headline, detail, rows[-1]) == ("1 / 2", "entries submitted", ("Restarted app, Enter Now gone", "1 / 2"))
+
+
 def test_screen_checks_read_the_entry_page():
     top, bottom = screen("entry-top"), ready_to_submit()
     assert hamilton.on_entry(top) and not hamilton.on_list(top)

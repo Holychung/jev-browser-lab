@@ -100,8 +100,52 @@ def frames(path, size, fps):
     process.wait()
 
 
-def font(size):
-    return ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", size)
+def font(size, bold=True):
+    return ImageFont.truetype(f"/System/Library/Fonts/Supplemental/Arial{' Bold' if bold else ''}.ttf", size)
+
+
+def results(summary):
+    """The end card's headline and rows, taken from the run's own summary."""
+    targets = summary["targets"]
+    verified = summary.get("verified_after_restart") or {}
+    if summary["dry_run"]:
+        done = len(summary["dry_run_stops"])
+        still_open = sum(1 for card in verified.values() if card and card["enter_now"])
+        headline, detail = f"{done} / {len(targets)}", "reached Submit and stopped · dry run"
+        check = ("Restarted app, still open", f"{still_open} / {len(targets)}")
+    else:
+        done = len(summary["submitted"])
+        gone = sum(1 for p in summary["submitted"] if verified.get(p) and not verified[p]["enter_now"])
+        headline, detail = f"{done} / {len(targets)}", "entries submitted"
+        check = ("Restarted app, Enter Now gone", f"{gone} / {len(targets)}")
+    rows = [
+        ("Real time", f"{summary['entries_ms'] / 1000:.1f} s"),
+        ("Jev decisions", str(summary["jev_calls"])),
+        ("Model cost", f"US${summary['cost_usd']:.4f}"),
+        check,
+    ]
+    return headline, detail, rows
+
+
+def end_card(last, summary, scale):
+    """The last frame, blurred and dimmed, under the run's result and a few numbers."""
+    k = scale * 2  # 1.0 at 540 wide
+    card = last.filter(ImageFilter.GaussianBlur(12 * k))
+    card = Image.blend(card, Image.new("RGB", card.size, INK), 0.72)
+    d = ImageDraw.Draw(card)
+    headline, detail, rows = results(summary)
+    cx, y = card.width // 2, round(card.height * 0.26)
+    d.text((cx, y), "HAMILTON LOTTERY  ·  JEV ULTRAFAST", font=font(round(15 * k)), fill=GOLD, anchor="mm")
+    d.text((cx, y + round(95 * k)), headline, font=font(round(88 * k)), fill=WHITE, anchor="mm")
+    d.text((cx, y + round(170 * k)), detail, font=font(round(19 * k), bold=False), fill=WHITE, anchor="mm")
+    left, right = round(64 * k), card.width - round(64 * k)
+    top = y + round(225 * k)
+    d.line((left, top, right, top), fill=GOLD, width=max(1, round(2 * k)))
+    for i, (label, value) in enumerate(rows):
+        row = top + round((44 + 46 * i) * k)
+        d.text((left, row), label, font=font(round(18 * k), bold=False), fill=(214, 220, 214), anchor="lm")
+        d.text((right, row), value, font=font(round(20 * k)), fill=WHITE, anchor="rm")
+    return card
 
 
 def ring(d, x, y, r, width, alpha):
@@ -188,6 +232,7 @@ def main():
     parser.add_argument("--width", type=int, default=540, help="Output width in pixels")
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--gif", action="store_true", help="Also write a GIF next to the MP4")
+    parser.add_argument("--end-seconds", type=float, default=3.0, help="How long the result card holds")
     args = parser.parse_args()
     recording = json.loads((args.run / "recording.json").read_text())
     inputs, hidden = recording.get("inputs", []), recording["hidden"]
@@ -231,8 +276,17 @@ def main():
             status = f"REAL APP  ·  {args.speed:g}× SPEED  ·  {elapsed:4.1f} s real time"
             draw_footer(canvas, size[1], caption, status, scale)
             encoder.stdin.write(canvas.tobytes())
+            last = canvas
             count += 1
         print(f"{segment['file']}: {len(windows)} blur windows")
+    trace = args.run / "state.json"
+    if args.end_seconds > 0 and trace.exists():
+        card = end_card(last, json.loads(trace.read_text())["summary"], scale)
+        fade = round(0.4 * args.fps)
+        for i in range(round(args.end_seconds * args.fps)):
+            frame = Image.blend(last, card, min(1.0, (i + 1) / fade))
+            encoder.stdin.write(frame.tobytes())
+            count += 1
     encoder.stdin.close()
     encoder.wait()
     print(f"wrote {out} ({count / args.fps:.1f} s at {args.speed:g}x)")
