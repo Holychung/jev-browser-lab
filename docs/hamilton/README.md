@@ -78,6 +78,8 @@ uv run python scripts/render_hamilton.py artifacts/hamilton/latest --speed 2 --s
 - 你的名字不會傳給模型，錄影時會被模糊
 - app 登入過期時，程式會停下來，在模擬器手動登入後再跑一次
 
+想用 Chrome 報名 Telecharge 樂透，請看 [Telecharge 使用說明](../telecharge/README.md)。
+
 有任何問題或是想法歡迎聯繫我！
 
 ## 最簡單的方法

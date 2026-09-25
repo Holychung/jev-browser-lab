@@ -1,4 +1,4 @@
-# Jev Ultrafast 使用說明
+# Jev Ultrafast 使用說明：Telecharge 樂透
 
 這個專案是一個瀏覽器 agent：給它一個網頁和一句目標，它會在你的 Chrome 裡自己點、自己打字，直到完成。
 
@@ -54,7 +54,9 @@ uv run --env-file .env python examples/telecharge.py --show 'Maybe Happy Ending'
 
 <a href="telecharge-demo.mp4"><img src="telecharge-demo.gif" alt="實際跑一次 Telecharge：用 LinkedIn 登入、打開 Lottery、報名三部劇，原速播放" width="100%" /></a>
 
-<p align="center"><sub>真實的一次 run：從未登入到報名完三部劇共 17.5 秒，原速播放，每一筆都在重新載入頁面後確認過。<a href="telecharge-demo.mp4">看 MP4 原檔</a></sub></p>
+<p align="center"><sub>真實的一次 run：從未登入到報名完三部劇共 17.5 秒，原速播放，每一筆都在重新載入頁面後確認過。<a href="telecharge-demo.mp4">看 MP4 原檔</a> · <a href="measurement.json">數據</a></sub></p>
+
+想用 Android app 報名 Hamilton 樂透，請看 [Hamilton 使用說明](../hamilton/README.md)。
 
 有任何問題或是想法歡迎聯繫我！
 
