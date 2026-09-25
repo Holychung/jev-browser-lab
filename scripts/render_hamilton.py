@@ -6,7 +6,8 @@ examples/hamilton.py --record saves the device's own screen (screenrecord segmen
 every accessibility read with where the hidden name node was, and every tap and drag. The tree can lag
 the screen while it moves, so each blur covers the band between two consecutive reads, padded in space
 and time. A caption bar under the screen names each step Jev executed and prints the playback speed
-next to the real time since the first entry.
+next to the real time since the first entry. --skip-middle keeps only the first and the last
+performance and shows a card, with the real time left out, where the others are cut.
 """
 
 import argparse
@@ -20,6 +21,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 PAD_SECONDS = 0.4
 PAD_PIXELS = 60
 RIPPLE_SECONDS = 0.6
+CAPTION_LEAD = 0.3  # a step's caption shows this long before its input, while Jev decides
 FOOTER = 92  # caption bar under the screen, in pixels at 540 wide
 GOLD, INK, WHITE = (214, 170, 52), (23, 42, 32), (255, 255, 255)
 PERFORMANCE = re.compile(r"PERFORMANCE TIME ([A-Z][a-z]+ \d{1,2}, \d{4} \d{1,2}:\d{2}[ap]m)")
@@ -128,6 +130,38 @@ def results(summary):
     return headline, detail, rows
 
 
+def middle_cut(events, targets, inputs=()):
+    """(from, to, skipped) in host time: after the first performance until the last one begins.
+
+    The last performance begins with its first input's caption, 0.3 s before the input, so the cut runs
+    to that moment, and never ends before the performance before it did.
+    """
+    ends = {}
+    for e in events:
+        if e.get("performance") in targets:
+            ends[e["performance"]] = max(ends.get(e["performance"], e["t"]), e["t"])
+    if len(targets) < 3 or any(p not in ends for p in (targets[0], targets[-2])):
+        return None
+    before_last = ends[targets[-2]]
+    first_input = min((i["started"] for i in inputs if i["started"] > before_last), default=before_last)
+    return ends[targets[0]] + 0.3, max(before_last, first_input - CAPTION_LEAD), len(targets) - 2
+
+
+def skip_card(last, skipped, seconds, scale):
+    """Shown where the middle performances are cut: how many, and how much real time the cut covers."""
+    k = scale * 2
+    card = last.filter(ImageFilter.GaussianBlur(12 * k))
+    card = Image.blend(card, Image.new("RGB", card.size, INK), 0.72)
+    d = ImageDraw.Draw(card)
+    cx, cy = card.width // 2, round(card.height * 0.42)
+    d.text((cx, cy - round(60 * k)), f"+{skipped}", font=font(round(88 * k)), fill=WHITE, anchor="mm")
+    d.text((cx, cy + round(20 * k)), "more performances, entered the same way", font=font(round(19 * k), bold=False),
+           fill=WHITE, anchor="mm")
+    d.text((cx, cy + round(62 * k)), f"SKIPPED IN THIS CUT  ·  {seconds:.1f} s REAL TIME", font=font(round(14 * k)),
+           fill=GOLD, anchor="mm")
+    return card
+
+
 def end_card(last, summary, scale):
     """The last frame, blurred and dimmed, under the run's result and a few numbers."""
     k = scale * 2  # 1.0 at 540 wide
@@ -206,7 +240,7 @@ def captions(inputs, events):
     for event in inputs:
         step = next((e for e in steps if e["t"] >= event["started"]), None)
         if step:
-            out.append((event["started"] - 0.3, short(step)))
+            out.append((event["started"] - CAPTION_LEAD, short(step)))
     for e in events:
         if e["kind"] == "dry_run_stop":
             out.append((e["t"], f"DRY RUN  Stopped before Submit · {e['performance']}"))
@@ -234,6 +268,9 @@ def main():
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--gif", action="store_true", help="Also write a GIF next to the MP4")
     parser.add_argument("--end-seconds", type=float, default=3.0, help="How long the result card holds")
+    parser.add_argument(
+        "--skip-middle", action="store_true", help="Keep the first and last performance; mark the cut in between"
+    )
     args = parser.parse_args()
     recording = json.loads((args.run / "recording.json").read_text())
     inputs, hidden = recording.get("inputs", []), recording["hidden"]
@@ -244,6 +281,12 @@ def main():
     size = (args.width, round(source_h * scale / 2) * 2)
     canvas_size = (size[0], size[1] + round(FOOTER * args.width / 540 / 2) * 2)
     lines = captions(inputs, recording["events"])
+    trace = args.run / "state.json"
+    summary = json.loads(trace.read_text())["summary"] if trace.exists() else None
+    cut = middle_cut(recording["events"], summary["targets"], inputs) if args.skip_middle and summary else None
+    if args.skip_middle and cut is None:
+        raise SystemExit("--skip-middle needs a run of three or more performances with its state.json")
+    cut_shown, last, skip, fade_frames = False, None, None, round(0.25 * args.fps)
     encoder = subprocess.Popen(
         ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
          "-s", f"{canvas_size[0]}x{canvas_size[1]}", "-r", str(args.fps), "-i", "-", "-c:v", "libx264",
@@ -264,11 +307,21 @@ def main():
         # Sampling the recording at fps / speed and writing at fps plays it `speed` times faster.
         for i, image in enumerate(frames(source, size, args.fps / args.speed)):
             t = i * args.speed / args.fps
+            host = segment["started"] + t
+            if cut and cut[0] < host < cut[1]:
+                if not cut_shown and last is not None:
+                    # One card where the middle performances are left out: fade in from the last kept
+                    # frame, hold, and fade out into the first frame after the cut (below).
+                    skip = skip_card(last, cut[2], cut[1] - cut[0], scale)
+                    for j in range(round(1.15 * args.fps)):
+                        encoder.stdin.write(Image.blend(last, skip, min(1.0, (j + 1) / fade_frames)).tobytes())
+                        count += 1
+                    cut_shown = True
+                continue
             for start, end, top, bottom in windows:
                 if start <= t <= end:
                     box = (0, int(top * scale), size[0], int(bottom * scale) + 1)
                     image.paste(image.crop(box).filter(ImageFilter.GaussianBlur(14 * scale * 2)), box[:2])
-            host = segment["started"] + t
             draw_inputs(image, host, inputs, scale)
             canvas = Image.new("RGB", canvas_size, INK)
             canvas.paste(image, (0, 0))
@@ -276,13 +329,17 @@ def main():
             elapsed = max(0.0, host - recording["entries_started"])
             status = f"REAL APP  ·  {args.speed:g}× SPEED  ·  {elapsed:4.1f} s real time"
             draw_footer(canvas, size[1], caption, status, scale)
+            if skip is not None:
+                for j in range(fade_frames):
+                    encoder.stdin.write(Image.blend(skip, canvas, (j + 1) / fade_frames).tobytes())
+                    count += 1
+                skip = None
             encoder.stdin.write(canvas.tobytes())
             last = canvas
             count += 1
         print(f"{segment['file']}: {len(windows)} blur windows")
-    trace = args.run / "state.json"
-    if args.end_seconds > 0 and trace.exists():
-        card = end_card(last, json.loads(trace.read_text())["summary"], scale)
+    if args.end_seconds > 0 and summary:
+        card = end_card(last, summary, scale)
         fade = round(0.4 * args.fps)
         for i in range(round(args.end_seconds * args.fps)):
             frame = Image.blend(last, card, min(1.0, (i + 1) / fade))

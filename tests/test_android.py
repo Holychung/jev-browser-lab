@@ -241,6 +241,20 @@ def test_end_card_reports_the_run_from_its_summary():
     assert (headline, detail, rows[-1]) == ("1 / 2", "entries submitted", ("Restarted app, marked entered", "1 / 2"))
 
 
+def test_the_middle_cut_keeps_the_first_and_last_performance():
+    from scripts.render_hamilton import middle_cut
+
+    shows = ["A", "B", "C", "D"]
+    events = [{"t": t, "performance": p} for p, t in [("A", 1), ("A", 4), ("B", 6), ("B", 9), ("C", 12), ("C", 15),
+                                                      ("D", 17), ("D", 20)]]
+    assert middle_cut(events, shows) == (4.3, 15, 2)
+    # With inputs, the cut runs on to the caption of the last performance's first input.
+    cut = middle_cut(events, shows, [{"started": 14.0}, {"started": 16.2}, {"started": 18.0}])
+    assert cut[0] == 4.3 and abs(cut[1] - 15.9) < 1e-9 and cut[2] == 2
+    assert middle_cut(events, shows, [{"started": 15.2}]) == (4.3, 15, 2)
+    assert middle_cut(events, shows[:2]) is None
+
+
 def test_an_entered_card_is_read_by_its_undated_performance():
     card = {"index": 0, "class": "View", "resource_id": "", "clickable": False, "enabled": True, "checkable": False,
             "checked": False, "selected": False, "scrollable": False, "rect": (0, 352, 1080, 900),
