@@ -12,11 +12,15 @@ for <output>/approve or <output>/reject to appear.
 
 import argparse
 import json
+import os
 import re
 import time
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
-from jev_ultrafast import Agent
+from browser_harness.helpers import drain_events
+
+from jev_ultrafast import Agent, captcha_status, click_recaptcha_checkbox
 from jev_ultrafast.browser import StalePage
 from jev_ultrafast.recorder import Recorder
 
@@ -26,11 +30,90 @@ POPUPS = (
     " Accept the cookie notice if it blocks the page. Close unrelated pop-ups such as a newsletter "
     "sign-up without filling or submitting them."
 )
+def success_check(show):
+    return """(() => {
+      const text=(document.body?.innerText||'').replace(/\\s+/g,' ');
+      const confirmation=/entries?.{0,80}(?:successfully submitted|received|confirmed)/i.test(text) ||
+        /entries?.{0,80}(?:has|have) been submitted/i.test(text) ||
+        /(?:successfully submitted|confirmation).{0,80}entries?/i.test(text);
+      const listed=location.pathname.startsWith('/dash/results') &&
+        text.includes(__SHOW__) && /\\d+\\s+ticket(?:\\(s\\))?/i.test(text);
+      return confirmation || listed;
+    })()""".replace("__SHOW__", json.dumps(show))
+SUBMISSION_EVIDENCE = """(() => {
+  const selector='[role="dialog"],[role="alert"],mat-dialog-container,.mat-mdc-dialog-container,'+
+    '.modal,.toast,.alert,mat-error,.mat-mdc-form-field-error,.invalid-feedback,'+
+    'mat-snack-bar-container,.mat-mdc-snack-bar-container,.mdc-snackbar,[class*="snack-bar"]';
+  const visible=e => e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
+  const messages=[...document.querySelectorAll(selector)].filter(visible)
+    .map(e => e.innerText.trim()).filter(Boolean).map(s => s.slice(0,500));
+  const invalid=[...document.querySelectorAll('input,textarea,select')].filter(e => visible(e) && !e.checkValidity())
+    .map(e => ({name:e.labels?.[0]?.innerText.trim() || e.getAttribute('aria-label') || e.name || e.type,
+      message:e.validationMessage}));
+  return {messages:[...new Set(messages)],invalid};
+})()"""
+
+
+def arm_submission_network(agent):
+    """Start a clean, submit-only network window; never retain request bodies or query strings."""
+    agent.browser.call("Network.enable")
+    drain_events()
+
+
+def submission_network(agent, seconds=2.0):
+    """Collect sanitized non-GET and failed responses that followed the one allowed submit click."""
+    requests, responses = {}, {}
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        for event in drain_events():
+            if event.get("session_id") != agent.browser.session:
+                continue
+            params, method = event["params"], event["method"]
+            request_id = params.get("requestId")
+            if method == "Network.requestWillBeSent":
+                request = params["request"]
+                requests[request_id] = {"method": request["method"], "url": request["url"]}
+            elif method == "Network.responseReceived":
+                response = params["response"]
+                responses[request_id] = {
+                    "status": response["status"],
+                    "mime_type": response.get("mimeType", ""),
+                    "url": response["url"],
+                }
+        time.sleep(0.05)
+
+    evidence = []
+    secrets = [os.environ.get("LOGIN_EMAIL"), os.environ.get("LOGIN_PASSWORD")]
+    for request_id, response in responses.items():
+        request = requests.get(request_id, {})
+        if request.get("method") == "GET" and response["status"] < 400:
+            continue
+        split = urlsplit(response["url"])
+        item = {
+            "method": request.get("method"),
+            "url": urlunsplit((split.scheme, split.netloc, split.path, "", "")),
+            **response,
+        }
+        item["url"] = urlunsplit((split.scheme, split.netloc, split.path, "", ""))
+        try:
+            body = agent.browser.call("Network.getResponseBody", requestId=request_id).get("body", "")[:4000]
+        except RuntimeError:
+            body = ""
+        for secret in filter(None, secrets):
+            body = body.replace(secret, "[redacted]")
+        body = re.sub(r"[^\s@]+@[^\s@]+\.[^\s@]+", "[redacted email]", body)
+        if body:
+            item["body"] = body
+        evidence.append(item)
+    return evidence
 
 
 def stages(show):
     """(goal, independent check) per stage. A check is JS returning true once the stage is complete."""
-    on_show = f"location.pathname.startsWith('/dash/shows/') && document.body.innerText.includes({json.dumps(show)})"
+    on_show = (
+        f"location.pathname.startsWith('/dash/shows/') && document.body.innerText.includes({json.dumps(show)}) "
+        "&& document.querySelectorAll('input[type=checkbox]').length > 0"
+    )
     return [
         (
             "Log in to Lucky Seat. Choose TYPE_TEXT on the Email and Password fields; their values are "
@@ -55,7 +138,7 @@ def stages(show):
         ),
         (
             "Click Submit Entry. DONE once the page confirms the lottery entry." + POPUPS,
-            None,
+            success_check(show),
         ),
     ]
 
@@ -73,7 +156,7 @@ def gated(agent):
     """A click that may submit something, outside the login form, needs a human decision."""
     decision, page = agent.state["decision"], agent.state["page"]
     action = next((a for a in page["actions"] if a["id"] == decision["choice"]), None)
-    if not action or action["kind"] != "click" or action.get("role") != "button" or not SUBMIT.search(action["label"]):
+    if not action or action["kind"] != "click" or not SUBMIT.search(action["label"]):
         return None
     if any(a.get("input_type") == "password" for a in page["actions"]):
         return None
@@ -93,25 +176,41 @@ def wait_for_verdict(folder, action, agent):
     for name in ("approve", "reject"):
         (folder / name).unlink(missing_ok=True)
     decision, page = agent.state["decision"], agent.state["page"]
+    def form_state():
+        return agent.browser.evaluate("""(() => {
+          const boxes=[...document.querySelectorAll('input[type=checkbox]')];
+          return {checked: boxes.filter(b=>b.checked).length, total: boxes.length,
+            checked_labels: boxes.filter(b=>b.checked).map(b=>b.labels?.[0]?.innerText.trim()),
+            numbers: [...document.querySelectorAll('input[type=number]')].map(i=>i.value)};
+        })()""")
+
     pending = {
         "label": action["label"],
         "url": page["url"],
         "confidence": decision["confidence"],
         "target_confidence": decision["target_confidence"],
         # Whole-form state, including controls scrolled out of view. No page text: see main().
-        "form": agent.browser.evaluate("""(() => {
-          const boxes=[...document.querySelectorAll('input[type=checkbox]')];
-          return {checked: boxes.filter(b=>b.checked).length, total: boxes.length,
-            checked_labels: boxes.filter(b=>b.checked).map(b=>b.labels?.[0]?.innerText.trim()),
-            numbers: [...document.querySelectorAll('input[type=number]')].map(i=>i.value)};
-        })()"""),
+        "form": form_state(),
+        "captcha": captcha_status(agent.browser),
     }
+    agent.browser.call("Page.bringToFront")
+    if pending["captcha"]["present"] and not pending["captcha"]["solved"]:
+        pending["captcha"] = click_recaptcha_checkbox(agent.browser)
     (folder / "pending.json").write_text(json.dumps(pending, indent=2))
+    if pending["captcha"].get("outcome") == "challenge":
+        print("CAPTCHA image challenge is visible and needs manual completion", flush=True)
     print(f"PAUSED before clicking {action['label']!r} -- waiting for {folder}/approve or /reject", flush=True)
     while True:
         if (folder / "reject").exists():
             return False
         if (folder / "approve").exists():
+            captcha = captcha_status(agent.browser)
+            if captcha["present"] and not captcha["solved"]:
+                (folder / "approve").unlink()
+                pending.update(form=form_state(), captcha=captcha)
+                (folder / "pending.json").write_text(json.dumps(pending, indent=2))
+                print(f"REFUSED: solve the visible CAPTCHA before approving {action['label']}", flush=True)
+                continue
             (folder / "approve").unlink()
             (folder / "pending.json").unlink(missing_ok=True)
             return True
@@ -133,7 +232,10 @@ def main():
     folder = Path(args.output).resolve()
     folder.mkdir(parents=True, exist_ok=True)
     stage, false_dones = 0, 0
-    agent = Agent(URL, STAGES[stage][0])
+    # Keep click targets inside Chrome's physical compositor viewport. An oversized emulated
+    # viewport can expose a button to the snapshot while native mouse events below the real window
+    # silently miss it; ordinary scrolling keeps observation and execution geometry aligned.
+    agent = Agent(URL, STAGES[stage][0], viewport=(1120, 780), background=False)
     state = agent.state
     recorder = Recorder(agent.browser, folder, BLUR) if args.record else None
 
@@ -213,7 +315,16 @@ def main():
                         break
                     if recorder:
                         recorder.resume()
+                    arm_submission_network(agent)
                 agent.command("act", {"fingerprint": state["page"]["fingerprint"]})
+                if stage == len(STAGES) - 1 and action:
+                    network = submission_network(agent)
+                    evidence = {
+                        "page": agent.browser.evaluate(SUBMISSION_EVIDENCE),
+                        "network": network,
+                    }
+                    (folder / "submission.json").write_text(json.dumps(evidence, indent=2))
+                    print("SUBMISSION EVIDENCE:", evidence, flush=True)
                 if decision["choice"] not in {"DONE", "BLOCKED"}:
                     state["goal"] = STAGES[stage][0]
                 if PRIVATE.search(state["page"]["url"]):
