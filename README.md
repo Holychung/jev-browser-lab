@@ -93,7 +93,8 @@ with Agent(
 ```
 
 `click_recaptcha_checkbox(browser)` is a shared, one-click helper for standard reCAPTCHA widgets. It
-returns observable outcomes such as `solved` or `challenge`; image challenges remain a manual step.
+clicks only a visible checkbox that nothing covers, and returns observable outcomes such as `solved`,
+`challenge`, `covered`, or `invisible`; image challenges remain a manual step.
 
 Run with `uv run --env-file .env python your_script.py`. The same policy can run a different task:
 

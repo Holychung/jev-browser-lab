@@ -3,7 +3,8 @@
 uv run --env-file .env python examples/luckyseat.py
 
 The task runs as ordered stages. Each stage is one narrow goal; a DONE choice only advances the
-stage when an independent page check passes.
+stage when an independent page check passes. The final stage also reads this show's entries on a
+fresh Results page before the submit is approved and again afterwards; only a new entry passes.
 
 Credentials come from LOGIN_EMAIL / LOGIN_PASSWORD and are typed by code, never by a model.
 Any click that looks like a submission pauses the run: it writes <output>/pending.json and waits
@@ -12,15 +13,12 @@ for <output>/approve or <output>/reject to appear.
 
 import argparse
 import json
-import os
 import re
 import time
+from collections import Counter
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
 
-from browser_harness.helpers import drain_events
-
-from jev_ultrafast import Agent, captcha_status, click_recaptcha_checkbox
+from jev_ultrafast import Agent, Browser, captcha_status, click_recaptcha_checkbox
 from jev_ultrafast.browser import StalePage
 from jev_ultrafast.recorder import Recorder
 
@@ -54,58 +52,143 @@ SUBMISSION_EVIDENCE = """(() => {
 })()"""
 
 
+# The page's own fetch/XHR calls from the moment the log is armed: method, origin + path, and status.
+# Recording happens in the page, so it neither competes with the Recorder for CDP events nor loses
+# the submit request when a burst of later requests overflows the daemon's shared event buffer.
+# Bodies and query strings are never read.
+ARM_NETWORK_LOG = """(() => {
+  const log = window.__jevNetwork ||= {entries: [], installed: false};
+  log.entries = [];
+  if (log.installed) return true;
+  log.installed = true;
+  const clean = url => { try { const u = new URL(url, location.href); return u.origin + u.pathname; }
+    catch { return String(url).split(/[?#]/)[0]; } };
+  const record = (method, url) => {
+    const entry = {method: String(method || 'GET').toUpperCase(), url: clean(url), status: null};
+    log.entries.push(entry);
+    return entry;
+  };
+  const fetch0 = window.fetch;
+  window.fetch = function (input, init) {
+    const request = input instanceof Request ? input : null;
+    const entry = record(init?.method || request?.method, request ? request.url : input);
+    // A no-cors beacon (analytics) resolves opaque with status 0; that is not a failed request.
+    return fetch0.apply(this, arguments).then(
+      response => { entry.status = response.type === 'opaque' ? 'opaque' : response.status; return response; },
+      error => { entry.status = 0; throw error; });
+  };
+  const open0 = XMLHttpRequest.prototype.open, send0 = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open = function (method, url) {
+    this.__jevRequest = [method, url];
+    return open0.apply(this, arguments);
+  };
+  XMLHttpRequest.prototype.send = function () {
+    if (this.__jevRequest) {
+      const entry = record(...this.__jevRequest);
+      this.addEventListener('loadend', () => { entry.status = this.status; });
+    }
+    return send0.apply(this, arguments);
+  };
+  return true;
+})()"""
+NETWORK_LOG = "window.__jevNetwork ? window.__jevNetwork.entries : null"
+
+
 def arm_submission_network(agent):
-    """Start a clean, submit-only network window; never retain request bodies or query strings."""
-    agent.browser.call("Network.enable")
-    drain_events()
+    """Start a clean, submit-only request log in the page; it never reads bodies or query strings."""
+    agent.browser.evaluate(ARM_NETWORK_LOG)
 
 
-def submission_network(agent, seconds=2.0):
-    """Collect sanitized non-GET and failed responses that followed the one allowed submit click."""
-    requests, responses = {}, {}
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        for event in drain_events():
-            if event.get("session_id") != agent.browser.session:
-                continue
-            params, method = event["params"], event["method"]
-            request_id = params.get("requestId")
-            if method == "Network.requestWillBeSent":
-                request = params["request"]
-                requests[request_id] = {"method": request["method"], "url": request["url"]}
-            elif method == "Network.responseReceived":
-                response = params["response"]
-                responses[request_id] = {
-                    "status": response["status"],
-                    "mime_type": response.get("mimeType", ""),
-                    "url": response["url"],
-                }
-        time.sleep(0.05)
+def submission_network(agent, settle=1.0, timeout=10.0):
+    """Wait for the requests that followed the approved click, then keep non-GET and failed ones.
 
-    evidence = []
-    secrets = [os.environ.get("LOGIN_EMAIL"), os.environ.get("LOGIN_PASSWORD")]
-    for request_id, response in responses.items():
-        request = requests.get(request_id, {})
-        if request.get("method") == "GET" and response["status"] < 400:
-            continue
-        split = urlsplit(response["url"])
-        item = {
-            "method": request.get("method"),
-            "url": urlunsplit((split.scheme, split.netloc, split.path, "", "")),
-            **response,
-        }
-        item["url"] = urlunsplit((split.scheme, split.netloc, split.path, "", ""))
+    A request still in flight at the timeout is reported as pending rather than dropped. A full page
+    load discards the in-page log, and that is reported too.
+    """
+    started, entries = time.monotonic(), []
+    while True:
         try:
-            body = agent.browser.call("Network.getResponseBody", requestId=request_id).get("body", "")[:4000]
-        except RuntimeError:
-            body = ""
-        for secret in filter(None, secrets):
-            body = body.replace(secret, "[redacted]")
-        body = re.sub(r"[^\s@]+@[^\s@]+\.[^\s@]+", "[redacted email]", body)
-        if body:
-            item["body"] = body
-        evidence.append(item)
-    return evidence
+            current = agent.browser.evaluate(NETWORK_LOG)
+        except StalePage:
+            current = None
+        if current is None:
+            return {"navigated": True, "complete": False, "requests": entries}
+        entries = current
+        elapsed = time.monotonic() - started
+        in_flight = any(e["status"] is None for e in entries)
+        if (elapsed >= settle and not in_flight) or elapsed >= timeout:
+            break
+        time.sleep(0.1)
+
+    def kept(entry):
+        status = entry["status"]
+        if status == "opaque":
+            return False
+        return entry["method"] != "GET" or status is None or status == 0 or status >= 400
+
+    requests = [{**e, "status": "pending" if e["status"] is None else e["status"]} for e in entries if kept(e)]
+    return {"navigated": False, "complete": not in_flight, "requests": requests}
+
+
+RESULTS_URL = "https://www.luckyseat.com/dash/results"
+# One Results entry is the smallest element that names the show and holds exactly one ticket count,
+# e.g. "Hadestown | New York, NY | Oct 1 at 7:00 PM | 1 ticket(s)". The count's digit sits in its own
+# span, so counts are read from rendered ancestor text, not single text nodes. Lines after the count
+# (drawing date, status) are left out so a drawing that finishes between two reads does not look like
+# a new entry.
+RESULT_ROWS = """(show => {
+  if (!location.pathname.startsWith('/dash/results') || document.readyState !== 'complete') return null;
+  const count=/\\d+\\s+ticket(?:\\(s\\))?/i, target=show.toLowerCase(), rows=new Set();
+  const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
+  let node;
+  while ((node=walker.nextNode())) {
+    if (!/ticket/i.test(node.textContent)) continue;
+    for (let a=node.parentElement; a && a!==document.body; a=a.parentElement) {
+      const text=a.innerText||'', counts=(text.match(/\\d+\\s+ticket/gi)||[]).length;
+      if (counts>1) break;
+      if (counts===1 && text.toLowerCase().includes(target)) { rows.add(a); break; }
+    }
+  }
+  return [...rows].map(row => {
+    const lines=row.innerText.split('\\n').map(s=>s.trim()).filter(Boolean);
+    return lines.slice(0, lines.findIndex(line=>count.test(line))+1).join(' | ');
+  });
+})"""
+
+
+def results_entries(show, open_browser=Browser, timeout=15.0, still=1.5):
+    """Read this show's entries from a fresh Results tab: an independent view of the account.
+
+    Returns None when the Results list never settles (signed out, still loading). The list counts as
+    settled once its entries and the page text have held still for `still` seconds with no request in
+    flight: an empty list read before the entries request returns would make old entries look new.
+    """
+    browser = open_browser("about:blank")
+    try:
+        # Log the page's requests from its first script on, so the entries request cannot be missed.
+        browser.call("Page.addScriptToEvaluateOnNewDocument", source=ARM_NETWORK_LOG)
+        browser.call("Page.navigate", url=RESULTS_URL)
+        read = f"""(() => [({RESULT_ROWS})({json.dumps(show)}), (document.body?.innerText||'').length,
+          (window.__jevNetwork?.entries||[]).filter(e => e.status===null).length])()"""
+        last, since, deadline = None, None, time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                current = browser.evaluate(read)
+            except StalePage:
+                current = None
+            if current is None or current[0] is None or current[2] or current != last:
+                last, since = current, time.monotonic()
+            elif time.monotonic() - since >= still:
+                return current[0]
+            time.sleep(0.25)
+        return None
+    finally:
+        browser.close()
+
+
+def new_entries(before, after):
+    """Entries on the Results page after the submit that were not there before it."""
+    return list((Counter(after) - Counter(before)).elements())
 
 
 def stages(show):
@@ -172,6 +255,24 @@ def premature_login(agent):
     return any(a.get("input_type") == "password" and not a.get("value") for a in page["actions"])
 
 
+CAPTCHA_NOTES = {
+    "challenge": "CAPTCHA image challenge is visible and needs manual completion",
+    "covered": "CAPTCHA checkbox is covered by another element; it was not clicked",
+    "pending": "CAPTCHA checkbox was clicked once but issued no token; complete it by hand",
+    "unavailable": "CAPTCHA checkbox is not in view; complete it by hand",
+}
+
+
+def captcha_blocks_approval(status):
+    """Only a visible reCAPTCHA checkbox must hold a token before the click.
+
+    Invisible reCAPTCHA issues its token when the gated button is pressed, and other vendors keep
+    theirs in their own field, so requiring a g-recaptcha-response token first could never be met.
+    For those the person reading pending.json decides.
+    """
+    return status["checkbox"] and not status["solved"]
+
+
 def wait_for_verdict(folder, action, agent):
     for name in ("approve", "reject"):
         (folder / name).unlink(missing_ok=True)
@@ -194,18 +295,18 @@ def wait_for_verdict(folder, action, agent):
         "captcha": captcha_status(agent.browser),
     }
     agent.browser.call("Page.bringToFront")
-    if pending["captcha"]["present"] and not pending["captcha"]["solved"]:
+    if captcha_blocks_approval(pending["captcha"]):
         pending["captcha"] = click_recaptcha_checkbox(agent.browser)
     (folder / "pending.json").write_text(json.dumps(pending, indent=2))
-    if pending["captcha"].get("outcome") == "challenge":
-        print("CAPTCHA image challenge is visible and needs manual completion", flush=True)
+    if pending["captcha"].get("outcome") in CAPTCHA_NOTES:
+        print(CAPTCHA_NOTES[pending["captcha"]["outcome"]], flush=True)
     print(f"PAUSED before clicking {action['label']!r} -- waiting for {folder}/approve or /reject", flush=True)
     while True:
         if (folder / "reject").exists():
             return False
         if (folder / "approve").exists():
             captcha = captcha_status(agent.browser)
-            if captcha["present"] and not captcha["solved"]:
+            if captcha_blocks_approval(captcha):
                 (folder / "approve").unlink()
                 pending.update(form=form_state(), captcha=captcha)
                 (folder / "pending.json").write_text(json.dumps(pending, indent=2))
@@ -244,13 +345,34 @@ def main():
             recorder.mark(kind, **fields)
 
     started = time.perf_counter()
+    # This show's Results entries, read in a fresh tab before the first final-stage click is approved.
+    # Earlier entries for the same show are already listed, so only a difference proves this submit.
+    baseline, verification, submissions = None, None, []
+
+    def verified_entry():
+        nonlocal started, verification
+        if baseline is None:
+            print("RESULTS CHECK: no Results baseline was read before the submit", flush=True)
+            return False
+        # The read is verification, not agent work: keep it out of the elapsed time like a pause.
+        before = time.perf_counter()
+        after = results_entries(args.show)
+        reading = time.perf_counter() - before
+        started += reading
+        state["started_at"] += reading
+        new = new_entries(baseline, after) if after is not None else []
+        verification = {"baseline": len(baseline), "after": None if after is None else len(after), "new": new}
+        print(f"RESULTS CHECK: {verification}", flush=True)
+        return bool(new)
 
     def passed():
         check = STAGES[stage][1]
         try:
-            return check is not None and agent.browser.evaluate(f"!!({check})") is True
+            ok = check is not None and agent.browser.evaluate(f"!!({check})") is True
         except StalePage:
             return False
+        # The final page check only says the page looks finished; a fresh Results read decides.
+        return ok and (stage < len(STAGES) - 1 or verified_entry())
 
     def advance(reason):
         nonlocal stage, false_dones
@@ -300,12 +422,15 @@ def main():
                     mark("refused", reason="Login clicked with an empty password")
                     note("The Password field is still empty. Choose TYPE_TEXT on the Password field first.")
                     continue
-                action = gated(agent)
+                action, final = gated(agent), stage == len(STAGES) - 1
                 if action:
                     mark("gate", label=action["label"], confidence=decision["confidence"])
                     if recorder:
                         recorder.pause()
                     before = time.perf_counter()
+                    if final and baseline is None:
+                        baseline = results_entries(args.show)
+                        print(f"RESULTS BASELINE: {baseline if baseline is None else len(baseline)}", flush=True)
                     approved = wait_for_verdict(folder, action, agent)
                     paused = time.perf_counter() - before
                     started += paused
@@ -315,16 +440,22 @@ def main():
                         break
                     if recorder:
                         recorder.resume()
-                    arm_submission_network(agent)
+                    if final:
+                        arm_submission_network(agent)
                 agent.command("act", {"fingerprint": state["page"]["fingerprint"]})
-                if stage == len(STAGES) - 1 and action:
+                if action and final:
                     network = submission_network(agent)
-                    evidence = {
-                        "page": agent.browser.evaluate(SUBMISSION_EVIDENCE),
-                        "network": network,
-                    }
-                    (folder / "submission.json").write_text(json.dumps(evidence, indent=2))
-                    print("SUBMISSION EVIDENCE:", evidence, flush=True)
+                    shown = agent.browser.evaluate(SUBMISSION_EVIDENCE)
+                    submissions.append({"label": action["label"], "page": shown, "network": network})
+                    (folder / "submission.json").write_text(json.dumps(submissions, indent=2))
+                    # Page messages stay in the file: they can name the account holder.
+                    requests = ", ".join(f"{r['method']} {r['url']} {r['status']}" for r in network["requests"])
+                    print(
+                        f"SUBMISSION EVIDENCE ({action['label']}): requests=[{requests}] "
+                        f"complete={network['complete']} navigated={network['navigated']} "
+                        f"messages={len(shown['messages'])} invalid={len(shown['invalid'])}",
+                        flush=True,
+                    )
                 if decision["choice"] not in {"DONE", "BLOCKED"}:
                     state["goal"] = STAGES[stage][0]
                 if PRIVATE.search(state["page"]["url"]):
@@ -377,6 +508,8 @@ def main():
             "text_calls": len(snapshot["text_calls"]),
             "cost_usd": round(cost, 6),
             "elapsed_ms_excluding_pauses": round((time.perf_counter() - started) * 1000),
+            "results_baseline": None if baseline is None else len(baseline),
+            "results_check": verification,
         }
         snapshot["page"] = {k: state["page"].get(k) for k in ("url", "title")}
         if recorder:

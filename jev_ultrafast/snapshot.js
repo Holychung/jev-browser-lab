@@ -8,10 +8,10 @@
   for (const [id,e] of cache.nodes) if (!e.isConnected) cache.nodes.delete(id);
   const visible = e => !e.closest('[aria-hidden="true"],[inert]') &&
     e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
-  // Page freshness should track controls that the agent can observe and operate. Hidden helper
-  // fields (for example reCAPTCHA's response textarea) may change asynchronously and must not
-  // invalidate an otherwise-current decision about a visible control.
-  const safe = e => !['password','file','hidden'].includes(e.type) && visible(e);
+  // Page freshness tracks every rendered form control, including a transparent native checkbox under
+  // a styled one. Unrendered helper fields (display:none, e.g. reCAPTCHA's response textarea) change
+  // asynchronously and must not invalidate an otherwise-current decision about a visible control.
+  const safe = e => !['password','file','hidden'].includes(e.type) && e.checkVisibility();
   // Password fields are offered as targets. Login field values never leave the page unmasked.
   const secret = e => e.tagName==='INPUT' && e.type==='password';
   const login = e => e.tagName==='INPUT' && ['email','password'].includes(e.type);
@@ -38,16 +38,21 @@
         n.nodeType===1 && n.getAttribute('aria-hidden')!=='true' ? name(n,seen) : '').join(' ').trim()) ||
       e.getAttribute('title') || e.getAttribute('placeholder') || '';
   };
+  // Stepper buttons are often bare icons. Their direction comes from an id, a class, or the icon's file
+  // name ("/assets/plus.svg"). Naming and stepper detection share this test, so a field is never made
+  // click-only next to buttons that stay unnamed.
+  const stepSource = e => [e.id,e.getAttribute('class'),e.querySelector('img')?.getAttribute('src')]
+    .filter(Boolean).join(' ');
+  const increase = e => /(^|[-_\s/])(plus|increment|increase)([-_.\s]|$)/i.test(stepSource(e));
+  const decrease = e => /(^|[-_\s/])(minus|decrement|decrease)([-_.\s]|$)/i.test(stepSource(e));
   // Icon-only controls often have no accessible name. Recover a hint from dismiss attributes,
   // icon ligature text (e.g. Material "close"), or class names, instead of offering a bare "button".
   const hint = e => {
     if (['mat-dialog-close','data-dismiss','data-bs-dismiss'].some(a=>e.hasAttribute(a))) return 'Close dialog';
     const icon=e.querySelector('mat-icon,.material-icons,.material-symbols-outlined')?.textContent.trim();
     if (icon) return icon.replace(/_/g,' ')+' (icon)';
-    const iconSource=[e.id,e.getAttribute('class'),e.querySelector('img')?.getAttribute('src')]
-      .filter(Boolean).join(' ');
-    if (/(^|[-_\s])(plus|increment|increase)([-_.\s]|$)/i.test(iconSource)) return 'Increase';
-    if (/(^|[-_\s])(minus|decrement|decrease)([-_.\s]|$)/i.test(iconSource)) return 'Decrease';
+    if (increase(e)) return 'Increase';
+    if (decrease(e)) return 'Decrease';
     if (/(^|[\s_-])close([\s_-]|$)/i.test(e.getAttribute('class')||'')) return 'Close';
     const fragment=e.tagName==='A' && (e.getAttribute('href')||'').match(/^#(.+)/);
     if (fragment) return fragment[1].replace(/[-_]/g,' ')+' (in-page link)';
@@ -142,9 +147,7 @@
           current_value:[...e.selectedOptions].map(o=>o.label).join(', '),label:base.label+' → '+o.label});
     } else {
       const stepper=e.type==='number' && [...(e.parentElement?.children||[])].some(control =>
-        clickable.has(control) && /(?:plus|minus|increment|decrement|increase|decrease)/i.test(
-          [control.id,control.getAttribute('class'),control.querySelector('img')?.getAttribute('src')]
-            .filter(Boolean).join(' ')));
+        clickable.has(control) && (increase(control) || decrease(control)));
       const editable=!stepper && !e.readOnly && e.getAttribute('aria-readonly')!=='true' &&
         (['textbox','searchbox','spinbutton'].includes(rname) ||
           (rname==='combobox' && ['INPUT','TEXTAREA'].includes(e.tagName)));

@@ -82,22 +82,52 @@ def test_native_select_snapshot_does_not_use_all_options_as_its_name():
     assert "e.tagName==='SELECT' ? [...e.selectedOptions].map(o=>o.label).join(', ')" in snapshot
 
 
-def test_page_fingerprint_ignores_hidden_helper_controls():
+def test_page_key_skips_unrendered_helper_fields_but_keeps_transparent_checkboxes():
     from pathlib import Path
 
     snapshot = Path("jev_ultrafast/snapshot.js").read_text()
-    assert "const safe = e => !['password','file','hidden'].includes(e.type) && visible(e);" in snapshot
+    # checkVisibility() without options drops display:none (reCAPTCHA's response textarea) but keeps
+    # an opacity:0 native checkbox under a styled box, whose state must still invalidate a decision.
+    assert "const safe = e => !['password','file','hidden'].includes(e.type) && e.checkVisibility();" in snapshot
     assert ".filter(safe)" in snapshot
 
 
-def test_snapshot_uses_real_stepper_controls_instead_of_typing_the_number():
+def step_pattern(direction):
+    import re
     from pathlib import Path
 
     snapshot = Path("jev_ultrafast/snapshot.js").read_text()
-    assert "return 'Increase'" in snapshot
-    assert "return 'Decrease'" in snapshot
+    return re.compile(re.search(rf"const {direction} = e => /(.+?)/i\.test\(stepSource\(e\)\);", snapshot)[1], re.I)
+
+
+@pytest.mark.parametrize(
+    ("source", "direction"),
+    [
+        ("/assets/images/plus.svg", "increase"),
+        ("qty-plus", "increase"),
+        ("btn increment", "increase"),
+        ("/assets/images/minus.svg", "decrease"),
+        ("stepper_decrease", "decrease"),
+    ],
+)
+def test_stepper_direction_is_read_from_ids_classes_and_icon_paths(source, direction):
+    assert step_pattern(direction).search(source)
+
+
+@pytest.mark.parametrize("source", ["surplus-note", "btnPlus", "minuscule", "/img/plush.png"])
+def test_stepper_direction_ignores_words_that_only_contain_plus_or_minus(source):
+    assert not step_pattern("increase").search(source)
+    assert not step_pattern("decrease").search(source)
+
+
+def test_stepper_detection_and_button_names_share_one_test():
+    from pathlib import Path
+
+    snapshot = Path("jev_ultrafast/snapshot.js").read_text()
+    assert "if (increase(e)) return 'Increase';" in snapshot
+    assert "if (decrease(e)) return 'Decrease';" in snapshot
+    assert "clickable.has(control) && (increase(control) || decrease(control))" in snapshot
     assert "const editable=!stepper" in snapshot
-    assert "clickable.has(control)" in snapshot
 
 
 def test_luckyseat_show_stage_waits_for_performance_controls():
@@ -141,15 +171,129 @@ def test_luckyseat_submission_evidence_reads_visible_errors_and_invalid_fields()
     assert "mat-snack-bar-container" in SUBMISSION_EVIDENCE
 
 
-def test_luckyseat_submission_network_does_not_record_request_bodies():
-    from inspect import getsource
+def test_luckyseat_network_log_records_method_path_and_status_only():
+    from examples.luckyseat import ARM_NETWORK_LOG
+
+    assert "u.origin + u.pathname" in ARM_NETWORK_LOG
+    for leaked in ("body", "text()", "json()", "responseText", "search"):
+        assert leaked not in ARM_NETWORK_LOG
+
+
+def test_luckyseat_submission_network_waits_for_a_slow_submit():
+    from types import SimpleNamespace
 
     from examples.luckyseat import submission_network
 
-    source = getsource(submission_network)
-    assert "postData" not in source
-    assert "urlsplit" in source
-    assert "LOGIN_PASSWORD" in source
+    post = {"method": "POST", "url": "https://example.test/api/entries", "status": None}
+    get = {"method": "GET", "url": "https://example.test/api/shows", "status": 200}
+    logs = [[post], [post, get], [{**post, "status": 201}, get]]
+    browser = SimpleNamespace(evaluate=Mock(side_effect=lambda _: logs.pop(0) if len(logs) > 1 else logs[0]))
+
+    result = submission_network(SimpleNamespace(browser=browser), settle=0, timeout=5)
+
+    assert result == {"navigated": False, "complete": True, "requests": [{**post, "status": 201}]}
+
+
+def test_luckyseat_submission_network_reports_requests_still_in_flight():
+    from types import SimpleNamespace
+
+    from examples.luckyseat import submission_network
+
+    post = {"method": "POST", "url": "https://example.test/api/entries", "status": None}
+    browser = SimpleNamespace(evaluate=Mock(return_value=[post]))
+
+    result = submission_network(SimpleNamespace(browser=browser), settle=0, timeout=0.2)
+
+    assert result == {"navigated": False, "complete": False, "requests": [{**post, "status": "pending"}]}
+
+
+def test_luckyseat_submission_network_leaves_out_opaque_beacons_and_keeps_failures():
+    from types import SimpleNamespace
+
+    from examples.luckyseat import submission_network
+
+    log = [
+        {"method": "POST", "url": "https://analytics.example/g/collect", "status": "opaque"},
+        {"method": "GET", "url": "https://example.test/api/entries", "status": 500},
+        {"method": "POST", "url": "https://example.test/api/entries", "status": 0},
+    ]
+    browser = SimpleNamespace(evaluate=Mock(return_value=log))
+
+    result = submission_network(SimpleNamespace(browser=browser), settle=0)
+
+    assert result["requests"] == log[1:]
+
+
+def test_luckyseat_submission_network_reports_a_full_page_load():
+    from types import SimpleNamespace
+
+    from examples.luckyseat import submission_network
+
+    browser = SimpleNamespace(evaluate=Mock(return_value=None))
+    assert submission_network(SimpleNamespace(browser=browser))["navigated"] is True
+
+
+def test_luckyseat_results_check_ignores_entries_listed_before_the_submit():
+    from examples.luckyseat import new_entries
+
+    old = "Hadestown | New York, NY | Oct 1 at 7:00 PM | 1 ticket(s)"
+    new = "Hadestown | New York, NY | Oct 8 at 7:00 PM | 1 ticket(s)"
+    assert new_entries([old], [old]) == []
+    assert new_entries([old], [old, new]) == [new]
+    assert new_entries([], [old]) == [old]
+
+
+def test_luckyseat_results_entries_waits_for_the_entries_request_and_a_still_list(monkeypatch):
+    from examples import luckyseat
+
+    # [rows, text length, requests in flight]: an empty list read while the entries request is
+    # still out must never be taken as "no entries".
+    reads = [None, [[], 100, 1], [[], 100, 1], [["Hadestown | 1 ticket(s)"], 180, 0]]
+    browser = Mock()
+    browser.evaluate.side_effect = lambda _: reads.pop(0) if len(reads) > 1 else reads[0]
+    monkeypatch.setattr(luckyseat.time, "sleep", lambda _: None)
+
+    rows = luckyseat.results_entries("Hadestown", open_browser=Mock(return_value=browser), still=0)
+
+    assert rows == ["Hadestown | 1 ticket(s)"]
+    assert browser.call.call_args_list[0].args == ("Page.addScriptToEvaluateOnNewDocument",)
+    assert browser.call.call_args_list[1].kwargs == {"url": luckyseat.RESULTS_URL}
+    browser.close.assert_called_once()
+
+
+def test_luckyseat_results_entries_never_settles_while_a_request_is_in_flight():
+    from examples import luckyseat
+
+    browser = Mock()
+    browser.evaluate.return_value = [[], 100, 1]
+    rows = luckyseat.results_entries("Hadestown", open_browser=Mock(return_value=browser), timeout=0.3, still=0)
+    assert rows is None
+
+
+def test_luckyseat_results_entries_is_unknown_when_the_list_never_loads():
+    from examples import luckyseat
+
+    browser = Mock()
+    browser.evaluate.return_value = None
+    assert luckyseat.results_entries("Hadestown", open_browser=Mock(return_value=browser), timeout=0.3) is None
+    browser.close.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("status", "blocks"),
+    [
+        ({"checkbox": True, "solved": False}, True),
+        ({"checkbox": True, "solved": True}, False),
+        # Invisible reCAPTCHA issues its token when the gated button is pressed.
+        ({"checkbox": False, "invisible": True, "solved": False}, False),
+        # Turnstile keeps its token in cf-turnstile-response, never g-recaptcha-response.
+        ({"checkbox": False, "invisible": False, "solved": False}, False),
+    ],
+)
+def test_luckyseat_captcha_gate_waits_only_for_a_visible_checkbox(status, blocks):
+    from examples.luckyseat import captcha_blocks_approval
+
+    assert captcha_blocks_approval(status) is blocks
 
 
 def test_luckyseat_keeps_clicks_inside_the_physical_viewport():
