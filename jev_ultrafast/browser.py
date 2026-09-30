@@ -30,14 +30,14 @@ class StalePage(ValueError):
 
 
 class Browser:
-    def __init__(self, url, viewport=(1120, 780)):
+    def __init__(self, url, viewport=(1120, 780), *, background=True):
         ensure_daemon()
-        self.target = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
+        self.target = cdp("Target.createTarget", url="about:blank", background=background)["targetId"]
         self.session = cdp("Target.attachToTarget", targetId=self.target, flatten=True)["sessionId"]
-        # A taller viewport puts a long list in one observation instead of several scrolls.
+        # The caller chooses a viewport that matches the browser surface it intends to drive.
         width, height = viewport
         self.call("Emulation.setDeviceMetricsOverride", width=width, height=height, deviceScaleFactor=1, mobile=False)
-        # Keep rAF/menus rendering in an owned background tab, without activating the user's Chrome tab.
+        # Keep rAF/menus rendering even when an owned tab is in the background.
         self.call("Emulation.setFocusEmulationEnabled", enabled=True)
         self.call("Page.enable")
         self.call("Page.addScriptToEvaluateOnNewDocument", source=CLICK_TRACKER)
@@ -60,6 +60,30 @@ class Browser:
     def observe(self, screenshot=True):
         if getattr(self, "after_input", None):
             action, self.after_input = self.after_input, None
+            if action["kind"] == "scroll":
+                # Wheel input can continue moving after dispatch. Observing during that motion makes
+                # the next decision stale before execution and can burn the model-call budget without
+                # another browser mutation. Wait for three stable animation frames, capped at one second.
+                try:
+                    self.call(
+                        "Runtime.evaluate",
+                        expression="""new Promise(resolve => {
+                          const start=performance.now(), initial=scrollY;
+                          let last=initial, stable=0, changed=false;
+                          const tick=()=>{
+                            const current=scrollY, elapsed=performance.now()-start;
+                            changed ||= current!==initial;
+                            stable = current===last ? stable+1 : 0; last=current;
+                            if ((changed && stable>=3) || (!changed && elapsed>250) || elapsed>1000) resolve();
+                            else requestAnimationFrame(tick);
+                          };
+                          requestAnimationFrame(tick);
+                        })""",
+                        awaitPromise=True,
+                        returnByValue=True,
+                    )
+                except RuntimeError:
+                    pass
             # This is read-only and happens after execution was logged, even if navigation interrupts it.
             try:
                 self.call(
@@ -228,6 +252,21 @@ def browser_operation(request):
                         modifiers=4 if sys.platform == "darwin" else 2,
                     )
                     call("Input.insertText", text=request["text"])
+                    # Input.insertText updates the DOM value but some framework-controlled fields
+                    # do not commit their component state until input/change handlers run. This is
+                    # post-mutation bookkeeping: do not turn a destroyed context into a retryable
+                    # failure after text may already have been entered.
+                    call(
+                        "Runtime.evaluate",
+                        expression="""(node => {
+                          const e=window.__jevFast?.nodes.get(node);
+                          if (!e?.isConnected) return false;
+                          e.dispatchEvent(new Event('input',{bubbles:true}));
+                          e.dispatchEvent(new Event('change',{bubbles:true}));
+                          return true;
+                        })(""" + json.dumps(action["node"]) + ")",
+                        returnByValue=True,
+                    )
         return {"executed": action["id"]}
 
     info = evaluate(READ_STATE)

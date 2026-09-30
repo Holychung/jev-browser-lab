@@ -6,7 +6,12 @@
     const id=cache.ids.get(e); cache.nodes.set(id,e); return id;
   };
   for (const [id,e] of cache.nodes) if (!e.isConnected) cache.nodes.delete(id);
-  const safe = e => !['password','file','hidden'].includes(e.type);
+  const visible = e => !e.closest('[aria-hidden="true"],[inert]') &&
+    e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
+  // Page freshness should track controls that the agent can observe and operate. Hidden helper
+  // fields (for example reCAPTCHA's response textarea) may change asynchronously and must not
+  // invalidate an otherwise-current decision about a visible control.
+  const safe = e => !['password','file','hidden'].includes(e.type) && visible(e);
   // Password fields are offered as targets. Login field values never leave the page unmasked.
   const secret = e => e.tagName==='INPUT' && e.type==='password';
   const login = e => e.tagName==='INPUT' && ['email','password'].includes(e.type);
@@ -14,8 +19,6 @@
   const contact = e => e.tagName==='INPUT' && (e.type==='tel' || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.value||'') ||
     /phone|mobile|e-?mail/i.test([e.name,e.id,e.autocomplete].join(' ')));
   const masked = e => login(e) || contact(e) ? (e.value ? '********' : '') : e.value;
-  const visible = e => !e.closest('[aria-hidden="true"],[inert]') &&
-    e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
   // A label whose `for` names no element ("password1" beside id="password") still sits next to its
   // field. Use it when it is the only such label among the field's siblings.
   const orphan = e => {
@@ -31,7 +34,7 @@
     return referenced || e.getAttribute('aria-label') ||
       [...(e.labels||[])].map(l=>name(l,seen)).filter(Boolean).join(' ') || name(orphan(e),seen) ||
       (['button','submit','reset'].includes(e.type) ? e.value : '') || e.getAttribute('alt') ||
-      (e.tagName==='INPUT' ? '' : [...e.childNodes].map(n=>n.nodeType===3 ? n.textContent :
+      (['INPUT','SELECT'].includes(e.tagName) ? '' : [...e.childNodes].map(n=>n.nodeType===3 ? n.textContent :
         n.nodeType===1 && n.getAttribute('aria-hidden')!=='true' ? name(n,seen) : '').join(' ').trim()) ||
       e.getAttribute('title') || e.getAttribute('placeholder') || '';
   };
@@ -41,6 +44,10 @@
     if (['mat-dialog-close','data-dismiss','data-bs-dismiss'].some(a=>e.hasAttribute(a))) return 'Close dialog';
     const icon=e.querySelector('mat-icon,.material-icons,.material-symbols-outlined')?.textContent.trim();
     if (icon) return icon.replace(/_/g,' ')+' (icon)';
+    const iconSource=[e.id,e.getAttribute('class'),e.querySelector('img')?.getAttribute('src')]
+      .filter(Boolean).join(' ');
+    if (/(^|[-_\s])(plus|increment|increase)([-_.\s]|$)/i.test(iconSource)) return 'Increase';
+    if (/(^|[-_\s])(minus|decrement|decrease)([-_.\s]|$)/i.test(iconSource)) return 'Decrease';
     if (/(^|[\s_-])close([\s_-]|$)/i.test(e.getAttribute('class')||'')) return 'Close';
     const fragment=e.tagName==='A' && (e.getAttribute('href')||'').match(/^#(.+)/);
     if (fragment) return fragment[1].replace(/[-_]/g,' ')+' (in-page link)';
@@ -113,7 +120,9 @@
     const rname=role(e) || (clickable.has(e) ? 'button' : null);
     if (!rname || (rname==='gridcell' && e.querySelector('button,[role="button"]'))) continue;
     // Offscreen copies count too: a lone "Enter" in view is still one of many on the page.
-    const label=name(e)||hint(e)||rname;
+    // Native option text is not the select's accessible name. When the page provides no label,
+    // the selected option is a compact, useful fallback ("All Cities", not every city repeated).
+    const label=name(e)||(e.tagName==='SELECT' ? [...e.selectedOptions].map(o=>o.label).join(', ') : '')||hint(e)||rname;
     if (r.width>0 && r.height>0) { named.set(label,[...(named.get(label)||[]),e]); names.set(e,label); }
     if (r.width<=0 || r.height<=0 || x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;
     const base={node:identity(e),role:rname,label,rect:{x:r.x,y:r.y,w:r.width,h:r.height}};
@@ -132,7 +141,11 @@
         actions.push({...base,kind:'select',value:o.value,
           current_value:[...e.selectedOptions].map(o=>o.label).join(', '),label:base.label+' → '+o.label});
     } else {
-      const editable=!e.readOnly && e.getAttribute('aria-readonly')!=='true' &&
+      const stepper=e.type==='number' && [...(e.parentElement?.children||[])].some(control =>
+        clickable.has(control) && /(?:plus|minus|increment|decrement|increase|decrease)/i.test(
+          [control.id,control.getAttribute('class'),control.querySelector('img')?.getAttribute('src')]
+            .filter(Boolean).join(' ')));
+      const editable=!stepper && !e.readOnly && e.getAttribute('aria-readonly')!=='true' &&
         (['textbox','searchbox','spinbutton'].includes(rname) ||
           (rname==='combobox' && ['INPUT','TEXTAREA'].includes(e.tagName)));
       const value='value' in e ? String(masked(e)) :

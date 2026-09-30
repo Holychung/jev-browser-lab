@@ -74,6 +74,112 @@ def test_one_index_per_node_with_operation_specific_targets():
     assert "WAIT" in controls
 
 
+def test_native_select_snapshot_does_not_use_all_options_as_its_name():
+    from pathlib import Path
+
+    snapshot = Path("jev_ultrafast/snapshot.js").read_text()
+    assert "['INPUT','SELECT'].includes(e.tagName) ? ''" in snapshot
+    assert "e.tagName==='SELECT' ? [...e.selectedOptions].map(o=>o.label).join(', ')" in snapshot
+
+
+def test_page_fingerprint_ignores_hidden_helper_controls():
+    from pathlib import Path
+
+    snapshot = Path("jev_ultrafast/snapshot.js").read_text()
+    assert "const safe = e => !['password','file','hidden'].includes(e.type) && visible(e);" in snapshot
+    assert ".filter(safe)" in snapshot
+
+
+def test_snapshot_uses_real_stepper_controls_instead_of_typing_the_number():
+    from pathlib import Path
+
+    snapshot = Path("jev_ultrafast/snapshot.js").read_text()
+    assert "return 'Increase'" in snapshot
+    assert "return 'Decrease'" in snapshot
+    assert "const editable=!stepper" in snapshot
+    assert "clickable.has(control)" in snapshot
+
+
+def test_luckyseat_show_stage_waits_for_performance_controls():
+    from examples.luckyseat import stages
+
+    check = stages("Hadestown")[1][1]
+    assert "/dash/shows/" in check
+    assert "Hadestown" in check
+    assert "input[type=checkbox]" in check
+
+
+def test_luckyseat_submit_stage_requires_independent_confirmation():
+    from examples.luckyseat import stages
+
+    check = stages("Hadestown")[-1][1]
+    assert check is not None
+    assert "successfully submitted" in check
+    assert "received" in check
+    assert "/dash/results" in check
+    assert "Hadestown" in check
+    assert "ticket" in check
+
+
+def test_luckyseat_gate_covers_link_styled_confirmation_controls():
+    from types import SimpleNamespace
+
+    from examples.luckyseat import gated
+
+    action = {"id": "e1", "kind": "click", "role": "link", "label": "Confirm & Submit"}
+    agent = SimpleNamespace(state={"decision": {"choice": "e1"}, "page": {"actions": [action]}})
+    assert gated(agent) == action
+
+
+def test_luckyseat_submission_evidence_reads_visible_errors_and_invalid_fields():
+    from examples.luckyseat import SUBMISSION_EVIDENCE
+
+    assert '[role="dialog"]' in SUBMISSION_EVIDENCE
+    assert '[role="alert"]' in SUBMISSION_EVIDENCE
+    assert "checkVisibility" in SUBMISSION_EVIDENCE
+    assert "checkValidity" in SUBMISSION_EVIDENCE
+    assert "mat-snack-bar-container" in SUBMISSION_EVIDENCE
+
+
+def test_luckyseat_submission_network_does_not_record_request_bodies():
+    from inspect import getsource
+
+    from examples.luckyseat import submission_network
+
+    source = getsource(submission_network)
+    assert "postData" not in source
+    assert "urlsplit" in source
+    assert "LOGIN_PASSWORD" in source
+
+
+def test_luckyseat_keeps_clicks_inside_the_physical_viewport():
+    from inspect import getsource
+
+    from examples.luckyseat import main
+
+    source = getsource(main)
+    assert "viewport=(1120, 780)" in source
+    assert "viewport=(1120, 3200)" not in source
+
+
+def test_observation_waits_for_scroll_to_settle(monkeypatch):
+    from jev_ultrafast import browser as browser_module
+
+    browser = browser_module.Browser.__new__(browser_module.Browser)
+    browser.session = "test-session"
+    browser.after_input = {"kind": "scroll"}
+    browser.call = Mock(return_value={})
+    expected = {"url": "https://example.test", "marker": "stable"}
+    monkeypatch.setattr(browser_module, "browser_operation", Mock(return_value=expected))
+
+    assert browser.observe(screenshot=False) == expected
+    expressions = [call.kwargs.get("expression", "") for call in browser.call.call_args_list]
+    assert any(
+        "changed && stable>=3" in expression and "!changed && elapsed>250" in expression
+        for expression in expressions
+    )
+
+
 def test_all_heads_are_one_request_and_only_matching_head_executes(monkeypatch):
     calls = []
 
@@ -249,6 +355,25 @@ def test_executor_rejects_a_stale_page_before_browser_input(monkeypatch):
     with pytest.raises(StalePage):
         b.act(page()["actions"][0], page(), "book")
     operation.assert_not_called()
+
+
+def test_fill_notifies_framework_controlled_fields(monkeypatch):
+    import jev_ultrafast.browser as browser
+
+    cdp = Mock(return_value={"result": {"value": {"x": 10, "y": 20}}})
+    monkeypatch.setattr(browser, "cdp", cdp)
+    browser_operation({
+        "operation": "act",
+        "session": "test",
+        "action": {"id": "e1", "kind": "fill", "node": 1},
+        "text": "1",
+    })
+
+    evaluations = [call for call in cdp.call_args_list if call.args[0] == "Runtime.evaluate"]
+    assert len(evaluations) == 2
+    committed = evaluations[-1].kwargs["expression"]
+    assert "new Event('input'" in committed
+    assert "new Event('change'" in committed
 
 
 @pytest.mark.parametrize("response", [{"exceptionDetails": {}}, {"result": {}}])
