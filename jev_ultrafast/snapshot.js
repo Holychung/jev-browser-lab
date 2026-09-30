@@ -8,10 +8,12 @@
   for (const [id,e] of cache.nodes) if (!e.isConnected) cache.nodes.delete(id);
   const visible = e => !e.closest('[aria-hidden="true"],[inert]') &&
     e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
-  // Page freshness tracks every rendered form control, including a transparent native checkbox under
-  // a styled one. Unrendered helper fields (display:none, e.g. reCAPTCHA's response textarea) change
+  // Page freshness tracks every form control a person could see, including a transparent native
+  // checkbox under a styled one (opacity is not checked). Hidden helper fields (display:none, e.g.
+  // reCAPTCHA's response textarea; visibility:hidden; aria-hidden or inert subtrees) change
   // asynchronously and must not invalidate an otherwise-current decision about a visible control.
-  const safe = e => !['password','file','hidden'].includes(e.type) && e.checkVisibility();
+  const safe = e => !['password','file','hidden'].includes(e.type) && !e.closest('[aria-hidden="true"],[inert]') &&
+    e.checkVisibility({checkVisibilityCSS:true});
   // Password fields are offered as targets. Login field values never leave the page unmasked.
   const secret = e => e.tagName==='INPUT' && e.type==='password';
   const login = e => e.tagName==='INPUT' && ['email','password'].includes(e.type);

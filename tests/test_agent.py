@@ -82,13 +82,17 @@ def test_native_select_snapshot_does_not_use_all_options_as_its_name():
     assert "e.tagName==='SELECT' ? [...e.selectedOptions].map(o=>o.label).join(', ')" in snapshot
 
 
-def test_page_key_skips_unrendered_helper_fields_but_keeps_transparent_checkboxes():
+def test_page_key_skips_hidden_helper_fields_but_keeps_transparent_checkboxes():
+    import re
     from pathlib import Path
 
     snapshot = Path("jev_ultrafast/snapshot.js").read_text()
-    # checkVisibility() without options drops display:none (reCAPTCHA's response textarea) but keeps
-    # an opacity:0 native checkbox under a styled box, whose state must still invalidate a decision.
-    assert "const safe = e => !['password','file','hidden'].includes(e.type) && e.checkVisibility();" in snapshot
+    safe = re.search(r"const safe = (.+?);\n", snapshot, re.S)[1]
+    # display:none (reCAPTCHA's response textarea), visibility:hidden, aria-hidden and inert are out;
+    # opacity is not checked, so an opacity:0 native checkbox under a styled box still counts.
+    assert "checkVisibility({checkVisibilityCSS:true})" in safe
+    assert "checkOpacity" not in safe
+    assert """closest('[aria-hidden="true"],[inert]')""" in safe
     assert ".filter(safe)" in snapshot
 
 
@@ -246,9 +250,9 @@ def test_luckyseat_results_check_ignores_entries_listed_before_the_submit():
 def test_luckyseat_results_entries_waits_for_the_entries_request_and_a_still_list(monkeypatch):
     from examples import luckyseat
 
-    # [rows, text length, requests in flight]: an empty list read while the entries request is
-    # still out must never be taken as "no entries".
-    reads = [None, [[], 100, 1], [[], 100, 1], [["Hadestown | 1 ticket(s)"], 180, 0]]
+    # [rows, text length, requests in flight, entries request returned 2xx]: an empty list read while
+    # the entries request is still out must never be taken as "no entries".
+    reads = [None, [[], 100, 1, False], [[], 100, 1, False], [["Hadestown | 1 ticket(s)"], 180, 0, True]]
     browser = Mock()
     browser.evaluate.side_effect = lambda _: reads.pop(0) if len(reads) > 1 else reads[0]
     monkeypatch.setattr(luckyseat.time, "sleep", lambda _: None)
@@ -265,9 +269,43 @@ def test_luckyseat_results_entries_never_settles_while_a_request_is_in_flight():
     from examples import luckyseat
 
     browser = Mock()
-    browser.evaluate.return_value = [[], 100, 1]
+    browser.evaluate.return_value = [[], 100, 1, False]
     rows = luckyseat.results_entries("Hadestown", open_browser=Mock(return_value=browser), timeout=0.3, still=0)
     assert rows is None
+
+
+def test_luckyseat_results_entries_waits_for_the_entries_request_even_on_a_quiet_page(monkeypatch):
+    from examples import luckyseat
+
+    # Nothing in flight and nothing changing, but the entries request has not been sent yet (the
+    # route's code is still loading): an empty baseline here would make old entries look new.
+    quiet = [[], 100, 0, False]
+    browser = Mock()
+    browser.evaluate.return_value = quiet
+    monkeypatch.setattr(luckyseat.time, "sleep", lambda _: None)
+    assert luckyseat.results_entries("Hadestown", open_browser=Mock(return_value=browser), timeout=0.2, still=0) is None
+
+    # Once it has returned, an empty list is a real "no entries yet".
+    browser.evaluate.return_value = [[], 100, 0, True]
+    assert luckyseat.results_entries("Hadestown", open_browser=Mock(return_value=browser), still=0) == []
+
+
+def test_luckyseat_final_stage_needs_a_new_results_entry_not_confirmation_text():
+    from examples.luckyseat import final_stage_passed
+
+    found = Mock(return_value=True)
+    missing = Mock(return_value=False)
+    # Confirmation text alone is not enough; the fresh Results read decides.
+    assert final_stage_passed(True, False, None, missing) is False
+    # A submit whose page shows no recognised text still passes on a DONE claim if Results has it.
+    assert final_stage_passed(False, True, None, found) is True
+    # An earlier read that found a new entry (right after the approved click) stands.
+    never = Mock()
+    assert final_stage_passed(False, False, {"new": ["Hadestown | Oct 8 | 1 ticket(s)"]}, never) is True
+    never.assert_not_called()
+    # Without a trigger there is no read.
+    assert final_stage_passed(False, False, {"new": []}, never) is False
+    never.assert_not_called()
 
 
 def test_luckyseat_results_entries_is_unknown_when_the_list_never_loads():

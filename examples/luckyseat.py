@@ -131,6 +131,9 @@ def submission_network(agent, settle=1.0, timeout=10.0):
 
 
 RESULTS_URL = "https://www.luckyseat.com/dash/results"
+# The request that fills the Results list, as the live page issues it. Until it has returned, an
+# empty list says nothing. If the site renames it, reads return None and the stage fails closed.
+ENTRIES_API = "/api/entrymanagement/getallentries"
 # One Results entry is the smallest element that names the show and holds exactly one ticket count,
 # e.g. "Hadestown | New York, NY | Oct 1 at 7:00 PM | 1 ticket(s)". The count's digit sits in its own
 # span, so counts are read from rendered ancestor text, not single text nodes. Lines after the count
@@ -159,24 +162,28 @@ RESULT_ROWS = """(show => {
 def results_entries(show, open_browser=Browser, timeout=15.0, still=1.5):
     """Read this show's entries from a fresh Results tab: an independent view of the account.
 
-    Returns None when the Results list never settles (signed out, still loading). The list counts as
-    settled once its entries and the page text have held still for `still` seconds with no request in
-    flight: an empty list read before the entries request returns would make old entries look new.
+    Returns None when the Results list never settles (signed out, entries request failed or renamed).
+    The list counts as settled only after the entries request has returned 2xx, and then its entries
+    and the page text have held still for `still` seconds with no request in flight. An empty list
+    read before that request returns, or before it is even sent (the route's code still loading),
+    would make old entries look new.
     """
     browser = open_browser("about:blank")
     try:
         # Log the page's requests from its first script on, so the entries request cannot be missed.
         browser.call("Page.addScriptToEvaluateOnNewDocument", source=ARM_NETWORK_LOG)
         browser.call("Page.navigate", url=RESULTS_URL)
-        read = f"""(() => [({RESULT_ROWS})({json.dumps(show)}), (document.body?.innerText||'').length,
-          (window.__jevNetwork?.entries||[]).filter(e => e.status===null).length])()"""
+        read = f"""(() => {{ const log=window.__jevNetwork?.entries||[];
+          return [({RESULT_ROWS})({json.dumps(show)}), (document.body?.innerText||'').length,
+            log.filter(e => e.status===null).length,
+            log.some(e => e.url.includes({json.dumps(ENTRIES_API)}) && e.status>=200 && e.status<300)]; }})()"""
         last, since, deadline = None, None, time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
                 current = browser.evaluate(read)
             except StalePage:
                 current = None
-            if current is None or current[0] is None or current[2] or current != last:
+            if current is None or current[0] is None or current[2] or not current[3] or current != last:
                 last, since = current, time.monotonic()
             elif time.monotonic() - since >= still:
                 return current[0]
@@ -189,6 +196,17 @@ def results_entries(show, open_browser=Browser, timeout=15.0, still=1.5):
 def new_entries(before, after):
     """Entries on the Results page after the submit that were not there before it."""
     return list((Counter(after) - Counter(before)).elements())
+
+
+def final_stage_passed(page_check, claimed, verification, verify):
+    """The final stage passes only on a new Results entry.
+
+    Confirmation text can change or never appear, so a matching page and a DONE claim only trigger a
+    fresh Results read (`verify`). A read that already found a new entry stands.
+    """
+    if verification and verification["new"]:
+        return True
+    return (page_check or claimed) and verify()
 
 
 def stages(show):
@@ -365,14 +383,15 @@ def main():
         print(f"RESULTS CHECK: {verification}", flush=True)
         return bool(new)
 
-    def passed():
+    def passed(claimed=False):
         check = STAGES[stage][1]
         try:
             ok = check is not None and agent.browser.evaluate(f"!!({check})") is True
         except StalePage:
-            return False
-        # The final page check only says the page looks finished; a fresh Results read decides.
-        return ok and (stage < len(STAGES) - 1 or verified_entry())
+            ok = False
+        if stage < len(STAGES) - 1:
+            return ok
+        return final_stage_passed(ok, claimed, verification, verified_entry)
 
     def advance(reason):
         nonlocal stage, false_dones
@@ -391,8 +410,11 @@ def main():
 
     try:
         while stage < len(STAGES):
+            if stage == len(STAGES) - 1 and verification and verification["new"]:
+                advance("new Results entry")
+                continue
             if state["status"] == "done":
-                if STAGES[stage][1] is None or passed():
+                if STAGES[stage][1] is None or passed(claimed=True):
                     advance("DONE, check passed")
                     continue
                 false_dones += 1
@@ -456,6 +478,9 @@ def main():
                         f"messages={len(shown['messages'])} invalid={len(shown['invalid'])}",
                         flush=True,
                     )
+                    # An approved final click may have submitted the entry whatever the page says next;
+                    # the Results diff decides, and a hit lets the check below advance the stage.
+                    verified_entry()
                 if decision["choice"] not in {"DONE", "BLOCKED"}:
                     state["goal"] = STAGES[stage][0]
                 if PRIVATE.search(state["page"]["url"]):
