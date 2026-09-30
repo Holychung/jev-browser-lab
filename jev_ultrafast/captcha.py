@@ -4,20 +4,35 @@ The helper clicks the checkbox at most once. It never attempts to recognize or a
 challenge; callers can pause for a person when the returned outcome is ``challenge``.
 """
 
+import json
 import time
 
+# Frames are identified by their Google path, not their title: hCaptcha's checkbox frame is titled
+# "...security challenge". A challenge counts only when rendered. reCAPTCHA keeps its hidden
+# challenge frame on screen under visibility:hidden, so geometry alone reports a false challenge.
 CAPTCHA_STATUS = """(() => {
-  const rect=e=>{if(!e)return null;const r=e.getBoundingClientRect();return {
-    x:r.x,y:r.y,w:r.width,h:r.height,visible:r.width>0&&r.height>0&&r.bottom>0&&r.top<innerHeight};};
+  const rect=e=>{if(!e)return null;const r=e.getBoundingClientRect();return {x:r.x,y:r.y,w:r.width,h:r.height,
+    visible:r.width>0&&r.height>0&&r.bottom>0&&r.top<innerHeight&&r.right>0&&r.left<innerWidth};};
+  const shown=e=>rect(e).visible && e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
   const widgets=[...document.querySelectorAll('.g-recaptcha,[data-sitekey]')];
-  const frames=[...document.querySelectorAll('iframe[src*=recaptcha],iframe[title*=reCAPTCHA]')];
+  const frames=[...document.querySelectorAll('iframe[src*="/recaptcha/"]')];
+  const anchors=frames.filter(f=>/\\/recaptcha\\/(?:api2|enterprise)\\/anchor/.test(f.src));
+  const anchor=anchors.find(f=>!/[?&]size=invisible/.test(f.src));
+  const challenge=frames.find(f=>/\\/recaptcha\\/(?:api2|enterprise)\\/bframe/.test(f.src) && shown(f));
   const responses=[...document.querySelectorAll('textarea[name="g-recaptcha-response"]')];
-  const anchor=frames.find(f=>!/challenge/i.test(f.title||'') && /anchor|recaptcha/i.test(f.src||f.title||''));
-  const challenge=frames.find(f=>/challenge/i.test(f.title||'') && rect(f)?.visible);
   const tokenLength=Math.max(0,...responses.map(e=>e.value.trim().length));
-  return {present:widgets.length>0||frames.length>0,solved:tokenLength>0,token_length:tokenLength,
-    challenge:!!challenge,anchor:rect(anchor),viewport:{width:innerWidth,height:innerHeight,scroll_y:scrollY}};
+  return {present:widgets.length>0||frames.length>0,checkbox:!!anchor,invisible:!anchor&&anchors.length>0,
+    solved:tokenLength>0,token_length:tokenLength,challenge:!!challenge,anchor:rect(anchor),
+    viewport:{width:innerWidth,height:innerHeight,scroll_y:scrollY}};
 })()"""
+
+ANCHOR = (
+    "[...document.querySelectorAll('iframe[src*=\"/recaptcha/\"]')]"
+    ".find(f=>/\\/recaptcha\\/(?:api2|enterprise)\\/anchor/.test(f.src) && !/[?&]size=invisible/.test(f.src))"
+)
+# The point must land on the checkbox frame itself. A consent banner or sticky footer on top of it
+# would otherwise receive the click, an unintended mutation outside any approval gate.
+HIT_TEST = "(point => { const f=" + ANCHOR + "; return !!f && document.elementFromPoint(...point)===f; })(%s)"
 
 
 def captcha_status(browser):
@@ -26,10 +41,11 @@ def captcha_status(browser):
 
 
 def click_recaptcha_checkbox(browser, timeout=5.0):
-    """Click one visible reCAPTCHA checkbox once and report the resulting state.
+    """Click one visible, uncovered reCAPTCHA checkbox once and report the resulting state.
 
-    Outcomes are ``absent``, ``solved``, ``challenge``, ``pending``, or ``unavailable``. A visible
-    image challenge is deliberately not solved here.
+    Outcomes are ``absent``, ``solved``, ``challenge``, ``invisible`` (the token is issued on
+    submit, so there is nothing to click), ``unavailable`` (another vendor's widget, or no checkbox
+    in view), ``covered``, or ``pending``. A visible image challenge is deliberately not solved here.
     """
     browser.call("Page.bringToFront")
     status = captcha_status(browser)
@@ -39,14 +55,11 @@ def click_recaptcha_checkbox(browser, timeout=5.0):
         return {**status, "outcome": "solved"}
     if status["challenge"]:
         return {**status, "outcome": "challenge"}
-    if not status["anchor"]:
-        return {**status, "outcome": "unavailable"}
+    if not status["checkbox"]:
+        return {**status, "outcome": "invisible" if status["invisible"] else "unavailable"}
 
     if not status["anchor"]["visible"]:
-        browser.evaluate(
-            "document.querySelector('iframe[title*=reCAPTCHA],iframe[src*=recaptcha]')"
-            "?.scrollIntoView({block:'center'})"
-        )
+        browser.evaluate(ANCHOR + "?.scrollIntoView({block:'center'})")
         browser.call(
             "Runtime.evaluate",
             expression="""new Promise(resolve => {
@@ -66,6 +79,8 @@ def click_recaptcha_checkbox(browser, timeout=5.0):
     anchor = status["anchor"]
     # Google's checkbox sits near the leading edge of its standard anchor iframe.
     x, y = anchor["x"] + min(28, anchor["w"] / 2), anchor["y"] + anchor["h"] / 2
+    if browser.evaluate(HIT_TEST % json.dumps([x, y])) is not True:
+        return {**status, "outcome": "covered"}
     for event in ("mousePressed", "mouseReleased"):
         browser.call("Input.dispatchMouseEvent", type=event, x=x, y=y, button="left", clickCount=1)
 
